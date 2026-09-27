@@ -304,6 +304,11 @@ kbd { padding: 2px 5px; color: var(--text-3); background: var(--hover); border: 
 :root[data-color-mode="dark"] .search input,
 :root[data-color-mode="dark"] .empty-state b,
 :root[data-color-mode="dark"] .timeline-empty b { color: var(--text) !important; }
+:root[data-color-mode="dark"] .automation-badge { color: var(--text-3); background: var(--subtle); border: 1px solid var(--border); }
+:root[data-color-mode="dark"] .automation-badge.active { color: var(--primary-dark); background: var(--primary-soft); border-color: color-mix(in srgb, var(--primary) 35%, var(--border)); }
+:root[data-color-mode="dark"] .row-title i.synced { color: var(--primary-dark); background: var(--primary-soft); }
+:root[data-color-mode="dark"] .row-title i.syncing { color: var(--primary-dark); background: var(--primary-soft); }
+:root[data-color-mode="dark"] .row-title i.local { color: var(--text-2); background: var(--subtle); }
 
 /* Keep timeline controls on one explicit, stable geometry at every width. */
 .timeline-actions { display: flex; align-items: center; justify-content: center; gap: 5px; }
