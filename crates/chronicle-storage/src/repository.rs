@@ -178,6 +178,52 @@ impl LocalRepository {
         &self.root
     }
 
+    /// Capture local-only health inputs; remote previews are deliberately excluded.
+    /// # Errors
+    /// Returns an error if the library or snapshot metadata cannot be read or serialized.
+    pub fn health_inputs(&self) -> Result<Vec<crate::health::HealthEntryInput>> {
+        let catalog = self.read_catalog()?;
+        let bindings = self.read_bindings()?;
+        catalog
+            .entries
+            .into_iter()
+            .map(|item| {
+                let mut sources = item.sources;
+                for source in &mut sources {
+                    source.path = bindings
+                        .entries
+                        .get(&item.id)
+                        .and_then(|bound| bound.iter().find(|binding| binding.id == source.id))
+                        .map(|binding| binding.path.clone())
+                        .unwrap_or_default();
+                }
+                let entry = Entry {
+                    id: item.id,
+                    name: item.name,
+                    sources,
+                    category_id: item.category_id,
+                    tags: item.tags,
+                    storage_policy: item.storage_policy,
+                    sync_mode: item.sync_mode,
+                    auto_backup_enabled: item.auto_backup_enabled,
+                    automatic_upload_enabled: item.automatic_upload_enabled,
+                    exclude_patterns: item.exclude_patterns,
+                    created_at_ms: item.created_at_ms,
+                };
+                let folder = self.entries_dir().join(&item.folder);
+                let snapshots = item
+                    .snapshots
+                    .into_iter()
+                    .map(|snapshot| {
+                        let path = folder.join(&snapshot.archive_name);
+                        crate::health::HealthSnapshotInput { snapshot, path }
+                    })
+                    .collect();
+                crate::health::HealthEntryInput::new(entry, snapshots).map_err(StorageError::Json)
+            })
+            .collect()
+    }
+
     /// Returns the total number of bytes currently stored in the repository.
     ///
     /// # Errors
@@ -986,16 +1032,63 @@ impl LocalRepository {
         device_id: impl Into<String>,
         safety: bool,
     ) -> Result<Snapshot> {
+        match self.capture_snapshot(entry_id, title.into(), device_id.into(), safety, None)? {
+            crate::AutomaticSnapshotOutcome::Created(snapshot) => Ok(snapshot),
+            _ => unreachable!("manual snapshots are never skipped"),
+        }
+    }
+
+    /// # Errors
+    /// Returns an error if sources cannot be captured or snapshot metadata cannot be saved.
+    pub fn create_automatic_snapshot(
+        &self,
+        entry_id: &str,
+        title: &str,
+        device_id: &str,
+        can_commit: &dyn Fn() -> bool,
+    ) -> Result<crate::AutomaticSnapshotOutcome> {
+        self.capture_snapshot(
+            entry_id,
+            title.into(),
+            device_id.into(),
+            false,
+            Some(can_commit),
+        )
+    }
+
+    fn capture_snapshot(
+        &self,
+        entry_id: &str,
+        title: String,
+        device_id: String,
+        safety: bool,
+        guard: Option<&dyn Fn() -> bool>,
+    ) -> Result<crate::AutomaticSnapshotOutcome> {
+        use crate::AutomaticSnapshotOutcome::{Created, Superseded, Unchanged};
+        if guard.is_some_and(|check| !check()) {
+            return Ok(Superseded);
+        }
         let entry = self.get_entry(entry_id)?;
         let created_at_ms = unix_millis(SystemTime::now());
         let snapshot_id = Uuid::new_v4().to_string();
         let archive_name = snapshot_archive_name(created_at_ms, &snapshot_id);
         let working = self.temp_dir().join(format!("capture-{snapshot_id}"));
+        let temporary_archive = self.temp_dir().join(format!("{snapshot_id}.7z"));
+        let _cleanup = CaptureCleanup {
+            working: working.clone(),
+            archive: temporary_archive.clone(),
+        };
         let content = working.join("content");
         fs::create_dir_all(&content)?;
         let patterns = entry.exclude_patterns.clone();
         let rules = ExclusionRules::new(&patterns).map_err(StorageError::InvalidBackupOption)?;
         let files = stage_sources(&entry.sources, &content, &rules)?;
+        if guard.is_some_and(|check| !check()) {
+            return Ok(Superseded);
+        }
+        if guard.is_some() && !capture_matches_sources(&entry, &files, &content, &rules)? {
+            return Ok(Superseded);
+        }
         let mut timeline = self.list_snapshots(entry_id)?;
         let parent_id = timeline.first().map(|snapshot| snapshot.id.clone());
         let changes = compare_manifests(
@@ -1003,10 +1096,37 @@ impl LocalRepository {
             &files,
         );
         let entry_dir = self.entry_dir(entry_id)?;
-        let temporary_archive = self.temp_dir().join(format!("{snapshot_id}.7z"));
+        let context_path = self
+            .root
+            .join("config")
+            .join(format!("capture-context-{}.json", entry.id));
+        let source_identity = serde_json::to_value((&entry.sources, &patterns))?;
+        let previous_context = read_json::<serde_json::Value>(&context_path).ok();
+        if guard.is_some()
+            && let Some(latest) = timeline.first()
+            && latest.exclude_patterns == patterns
+            && changes.added == 0
+            && changes.modified == 0
+            && changes.deleted == 0
+            && previous_context.as_ref()
+                == Some(&serde_json::json!({"snapshotId":latest.id,"sources":source_identity}))
+            && self.verify_snapshot(&latest.id).unwrap_or(false)
+        {
+            return Ok(if guard.is_some_and(|check| !check()) {
+                Superseded
+            } else {
+                Unchanged
+            });
+        }
         compress_to_path(&content, &temporary_archive)?;
         let object_hash = hash_file(&temporary_archive)?;
         let final_archive = entry_dir.join(&archive_name);
+        if guard.is_some() && !capture_matches_sources(&entry, &files, &content, &rules)? {
+            return Ok(Superseded);
+        }
+        if guard.is_some_and(|check| !check()) {
+            return Ok(Superseded);
+        }
         fs::rename(&temporary_archive, &final_archive)?;
         if working.exists() {
             fs::remove_dir_all(&working)?;
@@ -1015,9 +1135,9 @@ impl LocalRepository {
             id: snapshot_id,
             entry_id: entry.id,
             parent_id,
-            device_id: device_id.into(),
+            device_id,
             device_name: self.device_identity()?.1,
-            title: title.into(),
+            title,
             note: String::new(),
             created_at_ms,
             archive_name,
@@ -1033,7 +1153,13 @@ impl LocalRepository {
         timeline.push(snapshot.clone());
         timeline.sort_by_key(|item| item.created_at_ms);
         self.refresh_catalog_entry(entry_id, &timeline)?;
-        Ok(snapshot)
+        // Context is local-only. A failed cache write merely disables deduplication.
+        let _ = write_json_atomic(
+            &context_path,
+            &serde_json::json!({"snapshotId":snapshot.id,"sources":source_identity}),
+            &self.temp_dir(),
+        );
+        Ok(Created(snapshot))
     }
 
     /// Updates the shared user note for one snapshot.
@@ -1609,6 +1735,65 @@ fn directory_size(path: &Path) -> Result<u64> {
         }
     }
     Ok(total)
+}
+
+struct CaptureCleanup {
+    working: PathBuf,
+    archive: PathBuf,
+}
+impl Drop for CaptureCleanup {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.archive);
+        let _ = fs::remove_dir_all(&self.working);
+    }
+}
+
+fn capture_matches_sources(
+    entry: &Entry,
+    files: &[SnapshotFile],
+    content: &Path,
+    rules: &ExclusionRules,
+) -> Result<bool> {
+    let mut current = std::collections::BTreeMap::new();
+    for source in &entry.sources {
+        if source.kind == EntryKind::Registry {
+            let bytes =
+                registry::export_key(&source.path).map_err(StorageError::InvalidBackupOption)?;
+            let mut hash = String::with_capacity(64);
+            for byte in Sha256::digest(&bytes) {
+                hash.push(char::from(HEX[usize::from(byte >> 4)]));
+                hash.push(char::from(HEX[usize::from(byte & 0x0f)]));
+            }
+            current.insert(format!("{}/registry.json", source.id), hash);
+        } else {
+            match crate::health::source_manifest(
+                source,
+                rules,
+                &std::sync::atomic::AtomicBool::new(false),
+            ) {
+                Ok(manifest) => current.extend(manifest),
+                Err((crate::health::HealthCode::ChangedDuringCheck, _)) => {
+                    return Ok(false);
+                }
+                Err((code, detail)) => {
+                    return Err(StorageError::InvalidBackupOption(format!(
+                        "{code:?}: {detail}"
+                    )));
+                }
+            }
+        }
+    }
+    if current.len() != files.len() {
+        return Ok(false);
+    }
+    for file in files {
+        if current.get(&file.relative_path) != Some(&file.content_hash)
+            || hash_file(&content.join(&file.relative_path))? != file.content_hash
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn stage_sources(

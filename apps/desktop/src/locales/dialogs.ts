@@ -1,4 +1,5 @@
 export const dialogMessages: Record<string, string> = {
+  "已取消安装": "Installation cancelled",
   "游戏类型": "Game type",
   "Galgame 存档": "Galgame saves",
   "选择合集文件夹，递归查找其中的游戏及已存在的存档；勾选确认后添加到资料库。": "Select a collection folder to find games in nested folders and existing saves, then review and select which to add.",

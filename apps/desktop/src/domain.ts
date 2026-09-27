@@ -19,6 +19,7 @@ export type ArchiveSource = {
 };
 
 export type CreateArchiveInput = {
+  backupTrigger?: import("./services/backupAutomation").BackupTriggerConfig;
   excludePatterns?: string[];
   name: string;
   sources: ArchiveSource[];

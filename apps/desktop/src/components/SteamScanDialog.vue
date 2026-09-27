@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { t } from "../services/i18n";
 import { computed, onMounted, onBeforeUnmount, ref } from "vue";
-import { BookOpen, Gamepad2, X } from "@lucide/vue";
+import { Gamepad2, X } from "@lucide/vue";
+import GalgameIcon from "./GalgameIcon.vue";
 import SteamScanSettings from "./SteamScanSettings.vue";
 import GalgameScanSettings from "./GalgameScanSettings.vue";
 import SteamIcon from "./SteamIcon.vue";
@@ -35,7 +36,7 @@ onBeforeUnmount(() => { window.removeEventListener("keydown", keydown, true); pr
       <header><Gamepad2 /><h2 id="steam-dialog-title">{{ t('游戏存档识别') }}</h2><button ref="closeButton" :disabled="busy" :aria-label="t('关闭游戏存档识别')" @click="close"><X :size="18" /></button></header>
       <div class="scan-tabs" role="tablist" :aria-label="t('游戏类型')" @keydown="tabKey">
         <button id="scan-tab-steam" role="tab" aria-controls="scan-panel-steam" :aria-selected="tab === 'steam'" :tabindex="tab === 'steam' ? 0 : -1" :disabled="busy" @click="selectTab('steam')"><SteamIcon aria-hidden="true" />Steam</button>
-        <button id="scan-tab-galgame" role="tab" aria-controls="scan-panel-galgame" :aria-selected="tab === 'galgame'" :tabindex="tab === 'galgame' ? 0 : -1" :disabled="busy" @click="selectTab('galgame')"><BookOpen :size="18" aria-hidden="true" />Galgame <span>Beta</span></button>
+        <button id="scan-tab-galgame" role="tab" aria-controls="scan-panel-galgame" :aria-selected="tab === 'galgame'" :tabindex="tab === 'galgame' ? 0 : -1" :disabled="busy" @click="selectTab('galgame')"><GalgameIcon />Galgame <span>Beta</span></button>
       </div>
       <div class="steam-dialog-content">
         <div v-show="tab === 'steam'" id="scan-panel-steam" role="tabpanel" aria-labelledby="scan-tab-steam"><SteamScanSettings @busy="steamBusy = $event" @saved="emit('saved')" /></div>

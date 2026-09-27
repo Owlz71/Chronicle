@@ -20,6 +20,8 @@ import { notifyTrayBackground } from "./services/trayNotification";
 import CreateCategoryDialog from "./components/CreateCategoryDialog.vue";
 import CreateArchiveDialog from "./components/CreateArchiveDialog.vue";
 import SettingsDialog from "./components/SettingsDialog.vue";
+import BackupHealthDialog from "./components/BackupHealthDialog.vue";
+import { setBackupTrigger, getBackupRuntimeStates, subscribeBackupRuntime, acceptBackupRuntime, backupAutomationLabel, type BackupRuntimeStatus } from "./services/backupAutomation";
 import SteamScanDialog from "./components/SteamScanDialog.vue";
 import UpdateDialog from "./components/UpdateDialog.vue";
 import TutorialOverlay from "./components/TutorialOverlay.vue";
@@ -94,6 +96,19 @@ const categoryDialogOpen = ref(false);
 const creatingCategory = ref(false);
 const createCategoryError = ref<string>();
 const settingsOpen = ref(false);
+const backupHealthOpen = ref(false);
+const backupRuntime = ref<Record<string, BackupRuntimeStatus>>({});
+let backupRuntimeGeneration = 0;
+
+async function handleHealthAction(id: string, action: "open" | "edit" | "backup") {
+  const archive = archives.value.find(item => item.id === id);
+  if (!archive) return;
+  backupHealthOpen.value = false;
+  settingsOpen.value = false;
+  selectArchive(id);
+  if (action === "edit") openArchiveEditor(archive, true);
+  if (action === "backup") await createSnapshot();
+}
 const steamScanOpen = ref(false);
 const cloudSettingsOpen = ref(false);
 const syncingArchive = ref(false);
@@ -523,7 +538,10 @@ async function createArchive(input: CreateArchiveInput) {
   try {
     if (editingArchive.value) {
       const archiveId = editingArchive.value.id;
+      await archiveRepository.setArchiveAutomation(archiveId, false, input.automaticUploadEnabled);
+      await archiveRepository.refreshAutoBackup();
       await archiveRepository.updateArchive(archiveId, input);
+      if (input.backupTrigger && input.autoBackupEnabled) await setBackupTrigger(archiveId, input.backupTrigger);
       await archiveRepository.setArchiveAutomation(archiveId, input.autoBackupEnabled, input.automaticUploadEnabled);
       await archiveRepository.refreshAutoBackup();
       closeArchiveDialog();
@@ -533,7 +551,13 @@ async function createArchive(input: CreateArchiveInput) {
       return;
     }
     const categoryId = selectedCategoryId.value === "all" ? undefined : selectedCategoryId.value;
-    const archive = await archiveRepository.createArchive({ ...input, categoryId });
+    const archive = await archiveRepository.createArchive({ ...input, autoBackupEnabled: false, categoryId });
+    try { if (input.backupTrigger && input.autoBackupEnabled) await setBackupTrigger(archive.id, input.backupTrigger); }
+    catch (error) {
+      await refreshArchives(archive.id);
+      openArchiveEditor(archive);
+      throw new Error(t('存档已创建，自动备份未启用：{error}', { error: backupAutomationLabel(String(error)) }));
+    }
     await archiveRepository.setArchiveAutomation(archive.id, input.autoBackupEnabled, input.automaticUploadEnabled);
     await archiveRepository.refreshAutoBackup();
     createDialogOpen.value = false;
@@ -1125,7 +1149,6 @@ onMounted(async () => {
     applyAppearance(appSettings);
     startupUpdatePending = appSettings.checkForUpdates;
     if (isTauriRuntime) {
-      await archiveRepository.refreshAutoBackup();
       await listen<{ archiveId: string; error?: string }>("auto-backup-created", async ({ payload }) => {
         await Promise.all([refreshArchives(payload.archiveId), refreshSnapshots(payload.archiveId), refreshRepositoryInfo()]);
         const archive = archives.value.find((item) => item.id === payload.archiveId);
@@ -1133,6 +1156,12 @@ onMounted(async () => {
         showNotice(archive ? t("“{name}”已自动备份", { name: archive.name }) : t("已自动备份"));
       });
       await listen<{ archiveId: string; error?: string }>("auto-backup-failed", ({ payload }) => reportError(payload.error ?? t("自动备份失败"), { operation: t("自动备份"), archiveId: payload.archiveId }));
+      await listen<{generation:number}>("backup-automation-reset", ({payload}) => { if (payload.generation >= backupRuntimeGeneration) { backupRuntimeGeneration = payload.generation; backupRuntime.value = {}; } });
+      await subscribeBackupRuntime(status => { if (status.generation >= backupRuntimeGeneration) backupRuntime.value[status.entryId] = acceptBackupRuntime(backupRuntime.value[status.entryId], status); });
+      try {
+        await archiveRepository.refreshAutoBackup();
+        for (const status of await getBackupRuntimeStates()) if (status.generation >= backupRuntimeGeneration) backupRuntime.value[status.entryId] = acceptBackupRuntime(backupRuntime.value[status.entryId], status);
+      } catch (error) { showNotice(backupAutomationLabel(String(error)), 'error'); }
       await listen("chronicle-close-requested", () => { closeRequestOpen.value = true; });
       await listen("chronicle-hidden-to-tray", () => { void notifyTrayBackground(appSettings.notifications); });
     }
@@ -1220,6 +1249,7 @@ onBeforeUnmount(() => {
         </header>
 
         <ArchiveMetadata :archive="selectedArchive" :saving-tags="savingTags" @add-tag="addArchiveTag" @remove-tag="removeArchiveTag" />
+        <p v-if="selectedArchive.autoBackupEnabled && backupRuntime[selectedArchive.id]" class="backup-runtime" role="status">{{ backupAutomationLabel(backupRuntime[selectedArchive.id]!.reasonCode || backupRuntime[selectedArchive.id]!.status) }}</p>
 
         <div class="detail-content">
           <section class="timeline-area">
@@ -1248,7 +1278,8 @@ onBeforeUnmount(() => {
     </main>
 
     <AppToast v-if="notice" :message="notice.message" :type="notice.type" @close="notice = undefined" />
-    <SettingsDialog v-if="settingsOpen" @restart-tutorial="restartTutorial" :update-checking="updateChecking" @close="settingsOpen = false" @saved="handleSettingsChanged" @check-update="checkForApplicationUpdate(true, $event)" />
+    <SettingsDialog v-if="settingsOpen" @backup-health="backupHealthOpen = true" @restart-tutorial="restartTutorial" :update-checking="updateChecking" @close="settingsOpen = false" @saved="handleSettingsChanged" @check-update="checkForApplicationUpdate(true, $event)" />
+    <BackupHealthDialog v-if="backupHealthOpen" @close="backupHealthOpen = false" @open-archive="handleHealthAction($event, 'open')" @edit-sources="handleHealthAction($event, 'edit')" @backup-now="handleHealthAction($event, 'backup')" />
     <SteamScanDialog v-if="steamScanOpen" @close="steamScanOpen = false" @saved="handleSettingsChanged" />
     <button class="floating-theme-toggle" :class="{ 'is-dark': appSettings.colorMode === 'dark' }" :aria-label="appSettings.colorMode === 'dark' ? t('切换到日间模式') : t('切换到夜间模式')" :title="appSettings.colorMode === 'dark' ? t('切换到日间模式') : t('切换到夜间模式')" :aria-pressed="appSettings.colorMode === 'dark'" @click="toggleColorMode"><Sun v-if="appSettings.colorMode === 'dark'" :size="17" /><Moon v-else :size="17" /></button>
     <UpdateDialog v-if="availableUpdate && !tutorialActive" :update="availableUpdate" @close="availableUpdate = undefined" />
@@ -1274,6 +1305,7 @@ onBeforeUnmount(() => {
       :edit-exclude-patterns="editingArchive?.excludePatterns"
       :edit-storage-policy="editingArchive?.storagePolicy"
       :edit-auto-backup-enabled="editingArchive?.autoBackupEnabled"
+      :edit-archive-id="editingArchive?.id"
       :edit-automatic-upload-enabled="editingArchive?.automaticUploadEnabled"
       :highlight-sources="highlightSources"
       @close="closeArchiveDialog"

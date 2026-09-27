@@ -40,7 +40,8 @@ async function downloadAndInstall(): Promise<void> {
       sha256SumsUrl: props.update.checksumUrl ?? null,
     });
   } catch (error) {
-    message.value = error instanceof Error ? error.message : String(error);
+    const detail = error instanceof Error ? error.message : String(error);
+    message.value = detail === "update-install-cancelled" ? t("已取消安装") : detail;
     installing.value = false;
   }
 }

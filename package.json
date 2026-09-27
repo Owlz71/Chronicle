@@ -1,0 +1,7 @@
+{
+  "name": "chronicle",
+  "private": true,
+  "scripts": {
+    "desktop:dev": "npm --prefix apps/desktop run desktop:dev --"
+  }
+}

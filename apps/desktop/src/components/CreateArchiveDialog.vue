@@ -8,6 +8,8 @@ import { normalizeRegistryPath } from "../services/backupRules";
 import TutorialHint from "./TutorialHint.vue";
 import type { TutorialProgress, TutorialTip } from "../services/onboarding";
 import ThemedSelect, { type ThemedSelectOption } from "./ThemedSelect.vue";
+import BackupTriggerFields from "./BackupTriggerFields.vue";
+import { backupAutomationLabel, backupAutomationSupported, defaultBackupTrigger, getBackupTrigger, validateBackupTrigger } from "../services/backupAutomation";
 
 const props = defineProps<{
   sources: ArchiveSource[];
@@ -16,6 +18,7 @@ const props = defineProps<{
   submitting?: boolean;
   error?: string;
   editName?: string;
+  editArchiveId?: string;
   editStoragePolicy?: StoragePolicy;
   editAutoBackupEnabled?: boolean;
   editAutomaticUploadEnabled?: boolean;
@@ -47,6 +50,10 @@ function addRegistry(): void {
 }
 const storagePolicy = ref<StoragePolicy>(props.editStoragePolicy ?? "local");
 const autoBackupEnabled = ref(props.editAutoBackupEnabled ?? false);
+const backupTrigger = ref(defaultBackupTrigger());
+const triggerLoading = ref(Boolean(props.editArchiveId) && backupAutomationSupported());
+const triggerError = ref("");
+const triggerLoadFailed = ref(false);
 const automaticUploadEnabled = ref(props.editAutomaticUploadEnabled ?? false);
 const createInitialSnapshot = ref(props.defaultInitialSnapshot);
 const nameInput = ref<HTMLInputElement>();
@@ -60,6 +67,9 @@ watch(() => props.sources, (sources) => {
 function submit(): void {
   attempted.value = true;
   if (!name.value.trim() || !props.sources.length || props.submitting) return;
+  if (triggerLoading.value || triggerLoadFailed.value) return;
+  triggerError.value = autoBackupEnabled.value ? validateBackupTrigger(backupTrigger.value) ?? "" : "";
+  if (triggerError.value) return;
   emit("submit", {
     name: name.value.trim(),
     sources: props.sources.map((source) => ({ ...source })),
@@ -68,11 +78,19 @@ function submit(): void {
     createInitialSnapshot: createInitialSnapshot.value,
     syncMode: "manual",
     autoBackupEnabled: autoBackupEnabled.value,
+    backupTrigger: backupAutomationSupported() ? { ...backupTrigger.value } : undefined,
     automaticUploadEnabled: automaticUploadEnabled.value,
   });
 }
 
-onMounted(() => nameInput.value?.focus());
+onMounted(async () => {
+  nameInput.value?.focus();
+  if (props.editArchiveId && backupAutomationSupported()) {
+    try { backupTrigger.value = await getBackupTrigger(props.editArchiveId); }
+    catch (error) { triggerError.value = String(error); triggerLoadFailed.value = true; }
+    finally { triggerLoading.value = false; }
+  }
+});
 </script>
 
 <template>
@@ -124,7 +142,9 @@ onMounted(() => nameInput.value?.focus());
             <label :class="{ selected: storagePolicy === 'local_and_remote' }"><input v-model="storagePolicy" type="radio" value="local_and_remote" /><UploadCloud :size="16" /><span><b>{{ t('本地与云端') }}</b><small>{{ t('云端接入后自动加入同步') }}</small></span></label>
           </div></div>
 
-        <div data-tour="automation"><label class="initial-toggle"><span><b>{{ t('自动备份') }}</b><small>{{ t('仅监听文件和文件夹；合并时间内的变化保存为一份最新快照。注册表变化不会触发备份。') }}</small></span><input v-model="autoBackupEnabled" type="checkbox" role="switch" /></label>
+        <div data-tour="automation"><label class="initial-toggle"><span><b>{{ t('自动备份') }}</b><small>{{ t('按文件变化或游戏退出触发；内容未变化时跳过。') }}</small></span><input v-model="autoBackupEnabled" type="checkbox" role="switch" /></label>
+        <BackupTriggerFields v-model="backupTrigger" :disabled="!autoBackupEnabled || triggerLoading || triggerLoadFailed || Boolean(submitting)" />
+        <p v-if="triggerError" class="submit-error" role="alert">{{ backupAutomationLabel(triggerError) }}</p>
         <label class="initial-toggle"><span><b>{{ t('自动上传') }}</b><small>{{ t('该存档生成新快照后自动上传到启用的云端同步源；仅“本地与云端”存档可上传。') }}</small></span><input v-model="automaticUploadEnabled" type="checkbox" role="switch" /></label></div>
 
         <label v-if="!editName" class="initial-toggle"><span><b>{{ t('创建后立即备份') }}</b><small>{{ t('生成第一个可恢复的 7z 时间节点') }}</small></span><input v-model="createInitialSnapshot" type="checkbox" role="switch" /></label>

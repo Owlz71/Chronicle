@@ -60,6 +60,36 @@ fn installer_path(download_directory: &Path) -> PathBuf {
     download_directory.join(format!("Chronicle-update-{}.exe", Uuid::new_v4()))
 }
 
+#[cfg(any(windows, test))]
+fn installer_launch_result(code: Option<i32>) -> Result<(), String> {
+    match code {
+        Some(0) => Ok(()),
+        Some(1223) => Err("update-install-cancelled".into()),
+        _ => Err("无法启动安装包，请在下载目录中手动运行安装包".into()),
+    }
+}
+
+#[cfg(windows)]
+fn launch_installer(destination: &Path) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    let system_root =
+        std::env::var_os("SystemRoot").ok_or_else(|| "无法定位 Windows 系统目录".to_owned())?;
+    let status = Command::new(
+        PathBuf::from(system_root).join("System32/WindowsPowerShell/v1.0/powershell.exe"),
+    )
+    .args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        include_str!("launch_installer.ps1"),
+    ])
+    .env("CHRONICLE_UPDATE_INSTALLER", destination)
+    .creation_flags(0x08000000) // Hide the helper, not the installer or UAC prompt.
+    .status()
+    .map_err(|error| format!("无法启动安装包：{error}"))?;
+    installer_launch_result(status.code())
+}
+
 #[tauri::command]
 pub async fn fetch_release_feed() -> Result<String, String> {
     reqwest::Client::builder()
@@ -140,9 +170,9 @@ pub async fn download_and_install_update(
 
     #[cfg(target_os = "windows")]
     {
-        Command::new(&destination)
-            .spawn()
-            .map_err(|error| format!("无法启动安装包：{error}"))?;
+        tauri::async_runtime::spawn_blocking(move || launch_installer(&destination))
+            .await
+            .map_err(|error| format!("无法启动安装包：{error}"))??;
         app.exit(0);
         Ok(())
     }
@@ -156,6 +186,51 @@ pub async fn download_and_install_update(
 #[cfg(test)]
 mod tests {
     use super::{checksum_for_file, is_trusted_installer};
+
+    #[test]
+    fn installer_launch_only_succeeds_after_authorization() {
+        assert!(super::installer_launch_result(Some(0)).is_ok());
+        assert_eq!(
+            super::installer_launch_result(Some(1223)),
+            Err("update-install-cancelled".into())
+        );
+        assert!(super::installer_launch_result(Some(1)).is_err());
+        assert!(super::installer_launch_result(None).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn elevation_helper_handles_success_cancel_and_failure() {
+        use std::os::windows::process::CommandExt;
+        // Replace only the interactive OS boundary; execute the shipped helper unchanged.
+        for (response, expected) in [
+            (
+                "return [System.Diagnostics.Process]::GetCurrentProcess()",
+                0,
+            ),
+            (
+                "throw [System.ComponentModel.Win32Exception]::new(1223)",
+                1223,
+            ),
+            ("throw [System.ComponentModel.Win32Exception]::new(2)", 1),
+            ("return $null", 1),
+        ] {
+            let script = format!(
+                "function Start-Process {{ param($FilePath, $Verb, $WindowStyle, [switch]$PassThru, $ErrorAction) if ($FilePath -cne $env:CHRONICLE_UPDATE_INSTALLER -or $Verb -ne 'RunAs' -or !$PassThru) {{ throw 'Invalid launch' }} {response} }}\n{}",
+                include_str!("launch_installer.ps1")
+            );
+            let status = std::process::Command::new("powershell.exe")
+                .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+                .env(
+                    "CHRONICLE_UPDATE_INSTALLER",
+                    "C:\\中文 空格\\it's $(not-code)\\setup.exe",
+                )
+                .creation_flags(0x08000000)
+                .status()
+                .unwrap();
+            assert_eq!(status.code(), Some(expected));
+        }
+    }
 
     #[test]
     fn accepts_only_this_projects_windows_installer_assets() {

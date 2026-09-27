@@ -21,6 +21,7 @@ export interface AppSettings {
   notifications: boolean;
   createInitialSnapshot: boolean;
   autoBackupDelaySeconds: number;
+  backupHealthStaleDays: number;
   retentionCount: number | null;
   recycleBinEnabled: boolean;
   recycleBinPath: string;
@@ -94,6 +95,7 @@ const defaultAppSettings: AppSettings = {
   notifications: true,
   createInitialSnapshot: true,
   autoBackupDelaySeconds: 5,
+  backupHealthStaleDays: 7,
   retentionCount: null,
   recycleBinEnabled: true,
   recycleBinPath: "",
@@ -131,6 +133,7 @@ export function normalizeAppSettings(value: LegacyAppSettings = {}): AppSettings
     ...current,
     language: normalizeLocale(value.language),
     updateChannel: requestedUpdateChannel,
+    backupHealthStaleDays: Number.isFinite(value.backupHealthStaleDays) && Number(value.backupHealthStaleDays) >= 1 ? Math.min(365, Math.floor(Number(value.backupHealthStaleDays))) : 7,
     autoBackupDelaySeconds: Math.max(1, Math.min(300, Number.isFinite(delay) && delay >= 1 ? delay : 5)),
   };
 }

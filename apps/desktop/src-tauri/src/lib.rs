@@ -1,9 +1,13 @@
 mod auto_backup;
+mod backup_automation;
+mod backup_health;
 mod cloud;
 mod commands;
 mod galgame_scan;
+mod game_exit;
 mod language;
 mod onboarding;
+mod process_monitor;
 mod steam_scan;
 mod storage_root;
 #[cfg(test)]
@@ -35,6 +39,7 @@ pub(crate) struct AppState {
 pub fn run() {
     tauri::Builder::default()
         .manage(galgame_scan::ScanTasks::default())
+        .manage(backup_health::HealthTasks::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
@@ -142,10 +147,18 @@ pub fn run() {
             commands::exit_chronicle,
             commands::set_entry_automation,
             auto_backup::refresh_auto_backup,
+            auto_backup::get_backup_runtime_states,
+            backup_automation::get_backup_trigger,
+            backup_automation::set_backup_trigger,
+            process_monitor::list_backup_processes,
             commands::update_snapshot_note,
             commands::set_snapshot_locked,
             commands::delete_snapshot,
             commands::verify_snapshot,
+            backup_health::start_backup_health_check,
+            backup_health::cancel_backup_health_check,
+            backup_health::get_backup_health_state,
+            backup_health::load_backup_health_report,
             commands::restore_snapshot,
             update::fetch_release_feed,
             update::download_and_install_update,

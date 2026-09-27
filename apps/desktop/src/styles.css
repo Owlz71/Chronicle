@@ -216,6 +216,7 @@ kbd { padding: 2px 5px; color: var(--text-3); background: var(--hover); border: 
 .detail-placeholder h2 { color: var(--text); font-size: 16px; }
 .detail-placeholder p { margin: 8px 0 0; font-size: 11px; }
 .detail-header { min-height: 82px; padding: 14px 20px; border-bottom: 1px solid var(--border); }
+.backup-runtime { margin: 0; padding: 8px 20px; color: var(--text-2); background: var(--primary-soft); font-size: 12px; overflow-wrap: anywhere; }
 .identity, .actions, .title-line { display: flex; align-items: center; }
 .identity { min-width: 0; gap: 12px; }
 .detail-icon { width: 44px; height: 44px; flex: none; }
