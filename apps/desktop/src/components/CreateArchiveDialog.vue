@@ -9,7 +9,7 @@ import TutorialHint from "./TutorialHint.vue";
 import type { TutorialProgress, TutorialTip } from "../services/onboarding";
 import ThemedSelect, { type ThemedSelectOption } from "./ThemedSelect.vue";
 import BackupTriggerFields from "./BackupTriggerFields.vue";
-import { backupAutomationLabel, backupAutomationSupported, defaultBackupTrigger, getBackupTrigger, validateBackupTrigger } from "../services/backupAutomation";
+import { backupAutomationLabel, backupAutomationSupported, defaultBackupTrigger, getBackupTrigger, validateBackupTrigger, type BackupTriggerConfig } from "../services/backupAutomation";
 
 const props = defineProps<{
   sources: ArchiveSource[];
@@ -17,6 +17,7 @@ const props = defineProps<{
   defaultStoragePolicy?: StoragePolicy;
   defaultAutomaticUpload?: boolean;
   defaultName?: string;
+  presetBackupTrigger?: BackupTriggerConfig;
   picking?: SourceKind;
   submitting?: boolean;
   error?: string;
@@ -54,7 +55,7 @@ function addRegistry(): void {
 }
 const storagePolicy = ref<StoragePolicy>(props.editStoragePolicy ?? props.defaultStoragePolicy ?? "local");
 const autoBackupEnabled = ref(props.editAutoBackupEnabled ?? false);
-const backupTrigger = ref(defaultBackupTrigger());
+const backupTrigger = ref<BackupTriggerConfig>(props.presetBackupTrigger ? { ...props.presetBackupTrigger } : defaultBackupTrigger());
 const triggerLoading = ref(Boolean(props.editArchiveId) && backupAutomationSupported());
 const triggerError = ref("");
 const triggerLoadFailed = ref(false);

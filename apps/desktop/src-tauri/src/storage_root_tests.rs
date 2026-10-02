@@ -23,7 +23,10 @@ fn portable_marker_uses_sibling_data_directory() {
 
     assert_eq!(layout.root, directory.join("Chronicle-data"));
     assert!(layout.portable);
-    assert_eq!(layout.default_root, PathBuf::from("C:/AppData").join("Chronicle"));
+    assert_eq!(
+        layout.default_root,
+        PathBuf::from("C:/AppData").join("Chronicle")
+    );
     fs::remove_dir_all(directory).unwrap();
 }
 
@@ -70,8 +73,7 @@ fn portable_marker_takes_priority_over_custom_location() {
     let custom = test_directory("portable-custom-target");
     save_storage_location(&app_local_data.join(STORAGE_LOCATION_FILE), &custom).unwrap();
 
-    let layout =
-        resolve_storage_layout(&directory.join("Chronicle.exe"), &app_local_data).unwrap();
+    let layout = resolve_storage_layout(&directory.join("Chronicle.exe"), &app_local_data).unwrap();
 
     assert_eq!(layout.root, directory.join("Chronicle-data"));
     assert!(layout.portable);
@@ -88,7 +90,10 @@ fn invalid_location_file_falls_back_to_default() {
         resolve_storage_layout(&app_local_data.join("Chronicle.exe"), &app_local_data).unwrap();
 
     assert_eq!(layout.root, app_local_data.join("Chronicle"));
-    assert_eq!(load_storage_location(&app_local_data.join(STORAGE_LOCATION_FILE)), None);
+    assert_eq!(
+        load_storage_location(&app_local_data.join(STORAGE_LOCATION_FILE)),
+        None
+    );
     fs::remove_dir_all(app_local_data).unwrap();
 }
 
@@ -98,7 +103,9 @@ fn unavailable_custom_location_falls_back_to_default() {
     fs::create_dir_all(&app_local_data).unwrap();
     let pointer = app_local_data.join(STORAGE_LOCATION_FILE);
     // Parent directory does not exist, so the configured root cannot be used.
-    let missing = test_directory("unavailable-target").join("missing").join("deep");
+    let missing = test_directory("unavailable-target")
+        .join("missing")
+        .join("deep");
     save_storage_location(&pointer, &missing).unwrap();
 
     let layout =

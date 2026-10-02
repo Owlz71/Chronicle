@@ -126,8 +126,8 @@ pub(crate) fn save_storage_location(
         format_version: STORAGE_LOCATION_VERSION,
         repository_root: repository_root.to_string_lossy().into_owned(),
     };
-    let bytes =
-        serde_json::to_vec_pretty(&document).map_err(|error| io::Error::other(error.to_string()))?;
+    let bytes = serde_json::to_vec_pretty(&document)
+        .map_err(|error| io::Error::other(error.to_string()))?;
     let file_name = location_file
         .file_name()
         .and_then(|name| name.to_str())

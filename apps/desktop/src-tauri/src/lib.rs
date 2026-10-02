@@ -8,6 +8,7 @@ mod game_exit;
 mod language;
 mod onboarding;
 mod process_monitor;
+mod save_search;
 mod steam_scan;
 mod storage_migration;
 mod storage_root;
@@ -134,6 +135,7 @@ pub fn run() {
             commands::list_entries,
             commands::repository_info,
             commands::describe_dropped_paths,
+            save_search::search_appdata_saves,
             commands::open_repository_folder,
             storage_migration::storage_location_info,
             storage_migration::migrate_storage_location,

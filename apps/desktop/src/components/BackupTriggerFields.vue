@@ -56,20 +56,20 @@ async function running() {
   <fieldset class="backup-trigger" :disabled="disabled">
     <legend>{{ t("自动备份触发方式") }}</legend>
     <div class="trigger-modes">
-      <label :class="{ selected: modelValue.mode === 'file_change' }"
-        ><input
-          type="radio"
-          name="backup-trigger"
-          :checked="modelValue.mode === 'file_change'"
-          @change="update({ mode: 'file_change' })"
-        /><Files :size="16" aria-hidden="true" />{{ t("文件变化后") }}</label
-      ><label :class="{ selected: modelValue.mode === 'game_exit' }"
+      <label :class="{ selected: modelValue.mode === 'game_exit' }"
         ><input
           type="radio"
           name="backup-trigger"
           :checked="modelValue.mode === 'game_exit'"
           @change="update({ mode: 'game_exit' })"
         /><Gamepad2 :size="16" aria-hidden="true" />{{ t("游戏退出后") }}</label
+      ><label :class="{ selected: modelValue.mode === 'file_change' }"
+        ><input
+          type="radio"
+          name="backup-trigger"
+          :checked="modelValue.mode === 'file_change'"
+          @change="update({ mode: 'file_change' })"
+        /><Files :size="16" aria-hidden="true" />{{ t("文件变化后") }}</label
       >
     </div>
     <template v-if="modelValue.mode === 'game_exit'">

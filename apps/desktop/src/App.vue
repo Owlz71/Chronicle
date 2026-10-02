@@ -22,14 +22,16 @@ import CreateCategoryDialog from "./components/CreateCategoryDialog.vue";
 import CreateArchiveDialog from "./components/CreateArchiveDialog.vue";
 import SettingsDialog from "./components/SettingsDialog.vue";
 import BackupHealthDialog from "./components/BackupHealthDialog.vue";
-import { setBackupTrigger, getBackupRuntimeStates, subscribeBackupRuntime, acceptBackupRuntime, backupAutomationLabel, type BackupRuntimeStatus } from "./services/backupAutomation";
+import { setBackupTrigger, getBackupRuntimeStates, subscribeBackupRuntime, acceptBackupRuntime, backupAutomationLabel, backupAutomationSupported, type BackupRuntimeStatus, type BackupTriggerConfig } from "./services/backupAutomation";
 import SteamScanDialog from "./components/SteamScanDialog.vue";
+import SaveSearchDialog from "./components/SaveSearchDialog.vue";
 import UpdateDialog from "./components/UpdateDialog.vue";
 import TutorialOverlay from "./components/TutorialOverlay.vue";
 import { advanceTutorial, createTutorialState, loadTutorialProgress, saveTutorialProgress, shouldOfferTutorial, tutorialViews, type TutorialEvent, type TutorialProgress, type TutorialState } from "./services/onboarding";
 import ThemedSelect, { type ThemedSelectOption } from "./components/ThemedSelect.vue";
 import type { ArchiveRecord, ArchiveSource, CategoryRecord, CreateArchiveInput, DroppedPath, RepositoryInfo, SnapshotRecord, SourceKind } from "./domain";
 import { autoScrollDelta, dropTargetAt, exceedsDragThreshold } from "./services/pointerDrag";
+import { isExecutablePath, searchAppdataSaves, type SaveSearchHit } from "./services/saveSearch";
 import { archiveRepository, isTauriRuntime } from "./services/repository";
 import { cloudRepository, syncArchivesAcrossSources, type CloudSyncResult } from "./services/cloud";
 import { runCloudHealthCheck, type CloudHealthCheckItem } from "./services/cloudHealthCheck";
@@ -142,6 +144,12 @@ const closeRequestOpen = ref(false);
 let unlistenDragDrop: UnlistenFn | undefined;
 const dragDropActive = ref(false);
 const droppedDefaultName = ref<string>();
+const saveSearchOpen = ref(false);
+const saveSearchExe = ref("");
+const saveSearchHits = ref<SaveSearchHit[]>([]);
+const saveSearchBusy = ref(false);
+const saveSearchError = ref("");
+const presetBackupTrigger = ref<BackupTriggerConfig>();
 const updateChecking = ref(false);
 const availableUpdate = ref<ReleaseUpdate>();
 const tutorial = ref<TutorialState>({ step: "inactive", route: "local" });
@@ -485,6 +493,7 @@ function openCreateArchive() {
   highlightSources.value = false;
   pendingSources.value = [];
   droppedDefaultName.value = undefined;
+  presetBackupTrigger.value = undefined;
   createArchiveError.value = undefined;
   createDialogOpen.value = true;
 }
@@ -500,6 +509,7 @@ function openArchiveEditor(archive: ArchiveRecord, highlightSourceSelection = fa
   highlightSources.value = highlightSourceSelection;
   pendingSources.value = archive.sources.map((source) => ({ ...source }));
   droppedDefaultName.value = undefined;
+  presetBackupTrigger.value = undefined;
   createArchiveError.value = undefined;
   archiveMenuOpen.value = false;
   createDialogOpen.value = true;
@@ -510,6 +520,7 @@ function closeArchiveDialog() {
   editingArchive.value = undefined;
   highlightSources.value = false;
   droppedDefaultName.value = undefined;
+  presetBackupTrigger.value = undefined;
 }
 
 function requestConfirmation(title: string, message: string, confirmLabel: string, destructive = false): Promise<boolean> {
@@ -1051,6 +1062,7 @@ const externalDropBlocked = computed(() => (
   || steamScanOpen.value || cloudHealthDialogOpen.value || backupHealthOpen.value || closeRequestOpen.value
   || activityPanelOpen.value || sortMenuOpen.value || archiveMenuOpen.value || Boolean(treeMenu.value)
   || Boolean(confirmRequest.value) || Boolean(registryRestoreRequest.value) || Boolean(availableUpdate.value)
+  || saveSearchOpen.value
   || tutorialActive.value
 ));
 
@@ -1081,6 +1093,13 @@ async function handleExternalDrop(paths: string[]): Promise<void> {
       showNotice(t("拖入的路径不可访问：{value1}", { value1: missing.map((item) => item.path).join("、") }), "error");
       return;
     }
+    const droppedExecutable = usable.length === 1 && usable[0].kind === "file" && isExecutablePath(usable[0].path)
+      ? usable[0]
+      : undefined;
+    if (droppedExecutable && backupAutomationSupported()) {
+      void openSaveSearch(droppedExecutable.path);
+      return;
+    }
     const known = new Set(pendingSources.value.map((source) => `${source.kind}:${source.path}`));
     const sources: ArchiveSource[] = usable
       .filter((item) => !known.has(`${item.kind}:${item.path}`))
@@ -1093,6 +1112,7 @@ async function handleExternalDrop(paths: string[]): Promise<void> {
     highlightSources.value = false;
     pendingSources.value = sources;
     droppedDefaultName.value = defaultNameForDrop(usable);
+    presetBackupTrigger.value = undefined;
     createArchiveError.value = missing.length
       ? t("部分路径不可访问，已跳过：{value1}", { value1: missing.map((item) => item.path).join("、") })
       : undefined;
@@ -1100,6 +1120,41 @@ async function handleExternalDrop(paths: string[]): Promise<void> {
   } catch (error) {
     showNotice(readableError(error), "error");
   }
+}
+
+async function openSaveSearch(executablePath: string): Promise<void> {
+  saveSearchExe.value = executablePath;
+  saveSearchHits.value = [];
+  saveSearchError.value = "";
+  saveSearchOpen.value = true;
+  saveSearchBusy.value = true;
+  try {
+    saveSearchHits.value = await searchAppdataSaves(executablePath);
+  } catch (error) {
+    saveSearchError.value = readableError(error);
+  } finally {
+    saveSearchBusy.value = false;
+  }
+}
+
+function closeSaveSearch(): void {
+  saveSearchOpen.value = false;
+  saveSearchHits.value = [];
+  saveSearchError.value = "";
+}
+
+function selectSaveSearchHit(hit: SaveSearchHit): void {
+  const executablePath = saveSearchExe.value;
+  closeSaveSearch();
+  editingArchive.value = undefined;
+  highlightSources.value = false;
+  pendingSources.value = [{ id: crypto.randomUUID(), name: hit.name, path: hit.path, kind: "folder" }];
+  droppedDefaultName.value = hit.name;
+  presetBackupTrigger.value = executablePath
+    ? { mode: "game_exit", executablePath, quietSeconds: 5 }
+    : undefined;
+  createArchiveError.value = undefined;
+  createDialogOpen.value = true;
 }
 
 function beginPointerDrag(payload: DragPayload, event: PointerEvent): void {
@@ -1460,6 +1515,7 @@ onBeforeUnmount(() => {
       @submit="createCategory"
     />
     <TutorialOverlay v-if="tutorialActive && !steamScanOpen && !confirmRequest && !closeRequestOpen"  :language-saving="tutorialLanguageSaving" @language-change="changeTutorialLanguage" :appearance-page="tutorial.step === 'appearance'" :appearance="normalizeAppearance(appSettings)" :appearance-saving="tutorialAppearanceSaving" @appearance-change="changeTutorialAppearance" :welcome="tutorial.step === 'welcome'" :route="tutorial.step === 'route'" :finish="tutorial.step === 'finish'" :step="tutorialViews[tutorial.step]" :has-archive="Boolean(selectedArchive)" @start="tutorialEvent({ type: 'start' })" @skip="tutorialEvent({ type: 'skip' })" @local="localTutorial" @cloud="tutorialEvent({ type: 'choose-cloud' })" @next="nextTutorial" @use-existing="useExistingTutorial" />
+    <SaveSearchDialog v-if="saveSearchOpen" :executable-path="saveSearchExe" :hits="saveSearchHits" :busy="saveSearchBusy" :error="saveSearchError" @close="closeSaveSearch" @select="selectSaveSearchHit" />
     <CreateArchiveDialog :tutorial-progress="tutorialProgress" @tutorial-tip="rememberTutorialTip"
       v-if="createDialogOpen"
       :sources="pendingSources"
@@ -1467,6 +1523,7 @@ onBeforeUnmount(() => {
       :default-storage-policy="appSettings.defaultStoragePolicy"
       :default-automatic-upload="appSettings.defaultAutomaticUpload"
       :default-name="droppedDefaultName"
+      :preset-backup-trigger="presetBackupTrigger"
       :picking="pickingSource"
       :submitting="creatingArchive"
       :error="createArchiveError"

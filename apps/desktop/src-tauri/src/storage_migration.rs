@@ -233,7 +233,8 @@ fn validate_migration_target(current_root: &Path, target: &Path) -> Result<(), S
         if !target.is_dir() {
             return Err("新位置必须是文件夹".into());
         }
-        let mut entries = fs::read_dir(target).map_err(|error| format!("无法读取目标文件夹：{error}"))?;
+        let mut entries =
+            fs::read_dir(target).map_err(|error| format!("无法读取目标文件夹：{error}"))?;
         if entries.next().is_some() {
             return Err("请选择一个空文件夹".into());
         }
@@ -355,8 +356,10 @@ mod tests {
     use super::*;
 
     fn temp_directory(name: &str) -> PathBuf {
-        let directory =
-            std::env::temp_dir().join(format!("chronicle-migration-{name}-{}", uuid::Uuid::new_v4()));
+        let directory = std::env::temp_dir().join(format!(
+            "chronicle-migration-{name}-{}",
+            uuid::Uuid::new_v4()
+        ));
         fs::create_dir_all(&directory).unwrap();
         directory
     }
@@ -378,10 +381,10 @@ mod tests {
         assert!(validate_migration_target(&root, &root).is_err());
         assert!(validate_migration_target(&root, &nested).is_err());
 
-        let outer = root
-            .parent()
-            .unwrap()
-            .join(format!("chronicle-migration-outer-{}", uuid::Uuid::new_v4()));
+        let outer = root.parent().unwrap().join(format!(
+            "chronicle-migration-outer-{}",
+            uuid::Uuid::new_v4()
+        ));
         fs::remove_dir_all(&outer).ok();
         fs::create_dir_all(&outer).unwrap();
         assert!(validate_migration_target(&outer, &root).is_err());
