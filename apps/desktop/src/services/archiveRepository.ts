@@ -463,6 +463,9 @@ export class BrowserArchiveRepository {
     }
     for (const path of previousFiles.keys()) if (!currentFiles.has(path)) changes.deleted += 1;
     const manifest = files.map((file) => `${file.path}:${file.hash}`).join("\n");
+    // Back-to-back writes can land in the same millisecond, which would make the
+    // newest snapshot ambiguous for both the change summary above and the timeline.
+    const createdAt = Math.max(Date.now(), (previous?.createdAt ?? 0) + 1);
     const snapshot: SnapshotRecord = {
       id: crypto.randomUUID(),
       archiveId: archive.id,
@@ -470,7 +473,7 @@ export class BrowserArchiveRepository {
       locked: false,
       title,
       note: "",
-      createdAt: Date.now(),
+      createdAt,
       totalBytes: files.reduce((total, file) => total + file.size, 0),
       contentHash: await digest(new Blob([manifest])),
       files,

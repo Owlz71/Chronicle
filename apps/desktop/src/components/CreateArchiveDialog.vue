@@ -14,6 +14,9 @@ import { backupAutomationLabel, backupAutomationSupported, defaultBackupTrigger,
 const props = defineProps<{
   sources: ArchiveSource[];
   defaultInitialSnapshot: boolean;
+  defaultStoragePolicy?: StoragePolicy;
+  defaultAutomaticUpload?: boolean;
+  defaultName?: string;
   picking?: SourceKind;
   submitting?: boolean;
   error?: string;
@@ -32,10 +35,11 @@ const emit = defineEmits<{
   pick: [kind: Exclude<SourceKind, "registry">];
   registry: [path: string];
   remove: [id: string];
-  submit: [input: CreateArchiveInput];
+  submit: [input: CreateArchiveInput, options: { saveAsDefaults: boolean }];
 }>();
 
-const name = ref(props.editName ?? "");
+const name = ref(props.editName ?? props.defaultName ?? "");
+const saveAsDefaults = ref(false);
 const excludePatterns = ref((props.editExcludePatterns ?? []).join("\n"));
 const registryPath = ref("");
 const registryError = ref("");
@@ -48,20 +52,21 @@ function addRegistry(): void {
     registryError.value = "";
   } catch (error) { registryError.value = (error as Error).message; }
 }
-const storagePolicy = ref<StoragePolicy>(props.editStoragePolicy ?? "local");
+const storagePolicy = ref<StoragePolicy>(props.editStoragePolicy ?? props.defaultStoragePolicy ?? "local");
 const autoBackupEnabled = ref(props.editAutoBackupEnabled ?? false);
 const backupTrigger = ref(defaultBackupTrigger());
 const triggerLoading = ref(Boolean(props.editArchiveId) && backupAutomationSupported());
 const triggerError = ref("");
 const triggerLoadFailed = ref(false);
-const automaticUploadEnabled = ref(props.editAutomaticUploadEnabled ?? false);
+const automaticUploadEnabled = ref(props.editAutomaticUploadEnabled ?? props.defaultAutomaticUpload ?? false);
 const createInitialSnapshot = ref(props.defaultInitialSnapshot);
 const nameInput = ref<HTMLInputElement>();
 const attempted = ref(false);
 const backdrop = createBackdropDismissal(() => emit("close"), () => !props.submitting);
 
 watch(() => props.sources, (sources) => {
-  if (!name.value && sources.length === 1) name.value = sources[0].name;
+  if (name.value || sources.length !== 1) return;
+  name.value = props.defaultName ?? sources[0].name;
 }, { deep: true });
 
 function submit(): void {
@@ -80,7 +85,7 @@ function submit(): void {
     autoBackupEnabled: autoBackupEnabled.value,
     backupTrigger: backupAutomationSupported() ? { ...backupTrigger.value } : undefined,
     automaticUploadEnabled: automaticUploadEnabled.value,
-  });
+  }, { saveAsDefaults: saveAsDefaults.value });
 }
 
 onMounted(async () => {
@@ -148,6 +153,7 @@ onMounted(async () => {
         <label class="initial-toggle"><span><b>{{ t('自动上传') }}</b><small>{{ t('该存档生成新快照后自动上传到启用的云端同步源；仅“本地与云端”存档可上传。') }}</small></span><input v-model="automaticUploadEnabled" type="checkbox" role="switch" /></label></div>
 
         <label v-if="!editName" class="initial-toggle"><span><b>{{ t('创建后立即备份') }}</b><small>{{ t('生成第一个可恢复的 7z 时间节点') }}</small></span><input v-model="createInitialSnapshot" type="checkbox" role="switch" /></label>
+        <label v-if="!editName" class="initial-toggle"><span><b>{{ t('保存为默认选项') }}</b><small>{{ t('下次新建存档时沿用本次的保存方式、自动上传和立即备份设置。') }}</small></span><input v-model="saveAsDefaults" type="checkbox" role="switch" /></label>
         <p v-if="error" class="submit-error" role="alert">{{ error }}</p>
       </main>
 

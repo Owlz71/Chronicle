@@ -213,6 +213,46 @@ pub(crate) fn settings_recycle_root(repository: &chronicle_storage::LocalReposit
     )
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DroppedPathDto {
+    path: String,
+    name: String,
+    kind: &'static str,
+    exists: bool,
+}
+
+/// Classifies paths dropped onto the window so the frontend can pick the right
+/// source kind without filesystem access. Unreadable entries are reported with
+/// `exists: false` instead of failing the whole batch.
+#[tauri::command(async)]
+pub fn describe_dropped_paths(paths: Vec<String>) -> Vec<DroppedPathDto> {
+    paths
+        .into_iter()
+        .filter(|path| !path.trim().is_empty())
+        .map(|path| {
+            let trimmed = path.trim().to_owned();
+            let candidate = PathBuf::from(&trimmed);
+            let metadata = std::fs::metadata(&candidate).ok();
+            let name = candidate
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or(trimmed.as_str())
+                .to_owned();
+            DroppedPathDto {
+                path: trimmed,
+                name,
+                kind: if metadata.as_ref().is_some_and(|meta| meta.is_dir()) {
+                    "folder"
+                } else {
+                    "file"
+                },
+                exists: metadata.is_some(),
+            }
+        })
+        .collect()
+}
+
 #[tauri::command(async)]
 pub fn list_recycle_items(state: State<'_, AppState>) -> Result<Vec<RecycleItemDto>, String> {
     let repository = state.repository.lock().map_err(|_| state_error())?;

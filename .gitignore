@@ -1,8 +1,10 @@
 /target/
 /node_modules/
 /dist/
+/build/
 /.idea/
-/.vscode/
+/.vscode/*
+!/.vscode/tasks.json
 *.log
 .env
 .env.*

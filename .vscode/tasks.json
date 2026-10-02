@@ -1,0 +1,76 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "打包 exe（快速）",
+      "detail": "只编译 exe，不生成安装器。产物：build\\Chronicle.exe",
+      "type": "process",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}\\scripts\\build-app.ps1",
+        "-Mode",
+        "exe",
+        "-StopRunning"
+      ],
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true, "echo": false }
+    },
+    {
+      "label": "打包 exe 并启动",
+      "detail": "编译完直接运行 build\\Chronicle.exe",
+      "type": "process",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}\\scripts\\build-app.ps1",
+        "-Mode",
+        "exe",
+        "-Run",
+        "-StopRunning"
+      ],
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true, "echo": false }
+    },
+    {
+      "label": "完整发行打包",
+      "detail": "安装器 + 便携版 zip（较慢）",
+      "type": "process",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}\\scripts\\build-app.ps1",
+        "-Mode",
+        "bundle",
+        "-StopRunning"
+      ],
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true, "echo": false }
+    },
+    {
+      "label": "开发模式（热重载）",
+      "detail": "改前端秒级生效，不用打包 exe",
+      "type": "process",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "Set-Location '${workspaceFolder}\\apps\\desktop'; npm run desktop:dev"
+      ],
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true, "echo": false }
+    }
+  ]
+}

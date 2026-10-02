@@ -3,6 +3,7 @@ import { reactive, watch } from "vue";
 import { normalizeLocale, setLocale, t, type Locale } from "./i18n";
 import { normalizeAppearance, type ColorMode, type ColorTheme } from "./appearance";
 import { publicConfigKeys } from "./opendal";
+import type { StoragePolicy } from "../domain";
 
 export type CloseBehavior = "ask" | "tray" | "exit";
 export type UpdateChannel = "stable" | "beta";
@@ -20,6 +21,8 @@ export interface AppSettings {
   checkCloudOnLaunch: boolean;
   notifications: boolean;
   createInitialSnapshot: boolean;
+  defaultStoragePolicy: StoragePolicy;
+  defaultAutomaticUpload: boolean;
   autoBackupDelaySeconds: number;
   backupHealthStaleDays: number;
   retentionCount: number | null;
@@ -94,6 +97,8 @@ const defaultAppSettings: AppSettings = {
   checkCloudOnLaunch: false,
   notifications: true,
   createInitialSnapshot: true,
+  defaultStoragePolicy: "local",
+  defaultAutomaticUpload: false,
   autoBackupDelaySeconds: 5,
   backupHealthStaleDays: 7,
   retentionCount: null,
@@ -133,6 +138,8 @@ export function normalizeAppSettings(value: LegacyAppSettings = {}): AppSettings
     ...current,
     language: normalizeLocale(value.language),
     updateChannel: requestedUpdateChannel,
+    defaultStoragePolicy: value.defaultStoragePolicy === "local_and_remote" ? "local_and_remote" : "local",
+    defaultAutomaticUpload: value.defaultAutomaticUpload === true,
     backupHealthStaleDays: Number.isFinite(value.backupHealthStaleDays) && Number(value.backupHealthStaleDays) >= 1 ? Math.min(365, Math.floor(Number(value.backupHealthStaleDays))) : 7,
     autoBackupDelaySeconds: Math.max(1, Math.min(300, Number.isFinite(delay) && delay >= 1 ? delay : 5)),
   };

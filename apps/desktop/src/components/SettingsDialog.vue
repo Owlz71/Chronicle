@@ -71,6 +71,10 @@ const colorModeOptions = computed<ThemedSelectOption[]>(() => [
   { value: "light", label: t('日间模式') },
   { value: "dark", label: t('夜间模式') },
 ]);
+const storagePolicyOptions = computed<ThemedSelectOption[]>(() => [
+  { value: "local", label: t('仅本地') },
+  { value: "local_and_remote", label: t('本地与云端') },
+]);
 
 const sections = computed(() => [
   { id: "software" as const, label: t('软件'), icon: Settings2 },
@@ -176,6 +180,10 @@ function updateColorTheme(value: string | null): void {
 
 function updateColorMode(value: string | null): void {
   if (value) draft.colorMode = value as ColorMode;
+}
+
+function updateDefaultStoragePolicy(value: string | null): void {
+  if (value === "local" || value === "local_and_remote") draft.defaultStoragePolicy = value;
 }
 
 async function updateLanguage(value: string | null): Promise<void> {
@@ -374,6 +382,8 @@ watch(activeSection, (section) => { if (section === "notifications") void loadDi
               <div class="setting-row automation-actions"><span><b>{{ t('备份健康检查') }}</b><small>{{ t('检查本地快照完整性、来源路径和未备份变化。') }}</small></span><div><button @click="emit('backup-health')">{{ t('打开健康检查') }}</button></div></div>
               <label class="setting-row"><span><b>{{ t('未备份变化提醒天数') }}</b></span><input id="health-stale-days" v-model.number="draft.backupHealthStaleDays" class="number-input" type="number" min="1" max="365" /></label>
               <label class="setting-row"><span><b>{{ t('立即创建首个备份') }}</b><small>{{ t('添加文件或文件夹后建立初始时间节点') }}</small></span><input v-model="draft.createInitialSnapshot" type="checkbox" role="switch" /></label>
+              <label class="setting-row select-row"><span><b>{{ t('新存档默认保存方式') }}</b><small>{{ t('仅影响之后新建的存档；已有存档不受影响。') }}</small></span><ThemedSelect :model-value="draft.defaultStoragePolicy" :options="storagePolicyOptions" :label="t('新存档默认保存方式')" @update:model-value="updateDefaultStoragePolicy" /></label>
+              <label class="setting-row"><span><b>{{ t('新存档默认开启自动上传') }}</b><small>{{ t('仅对使用“本地与云端”的存档生效；仅本地存储的存档不会上传。') }}</small></span><input v-model="draft.defaultAutomaticUpload" type="checkbox" role="switch" /></label>
               <label class="setting-row"><span><b>{{ t('合并时间') }}</b><small>{{ t('文件变化后等待合并时间，再备份最新内容；内容未变则跳过，默认 5 秒。') }}</small></span><div class="number-control"><input v-model.number="draft.autoBackupDelaySeconds" class="number-input" type="number" min="1" max="300" :aria-label="t('自动备份合并秒数')" /><em>{{ t('秒') }}</em></div></label>
               <div class="setting-row automation-actions"><span><b>{{ t('批量自动化') }}</b><small>{{ t('按存档分别保存；已开启的项目再次点击可全部关闭。') }}</small></span><div><button :class="{ danger: allAutoBackupEnabled }" :disabled="automationBusy || !automationArchives.length" @click="toggleAllAutomation('backup')">{{ allAutoBackupEnabled ? t('关闭所有自动备份') : t('开启所有自动备份') }}</button><button :class="{ danger: allAutomaticUploadEnabled }" :disabled="automationBusy || !automationArchives.length" @click="toggleAllAutomation('upload')">{{ allAutomaticUploadEnabled ? t('关闭所有自动上传') : t('开启所有自动上传') }}</button></div></div>
               <div class="setting-row"><span><b>{{ t('每个存档保留版本') }}</b><small>{{ t('默认保留全部版本；设置上限后清理最旧的普通备份') }}</small></span><div class="retention-control"><input v-if="draft.retentionCount !== null" v-model.number="draft.retentionCount" :aria-label="t('版本保留数量')" class="number-input" type="number" min="1" max="999" /><label><span>{{ t('无限制') }}</span><input :checked="draft.retentionCount === null" type="checkbox" role="switch" @change="toggleRetentionLimit" /></label></div></div>

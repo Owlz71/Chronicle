@@ -7,8 +7,9 @@ import {
   Star, Sun, Trash2,
 } from "@lucide/vue";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, toRaw, watch } from "vue";
-import { listen } from "@tauri-apps/api/event";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import CloudCenterDialog from "./components/CloudCenterDialog.vue";
 import AppToast from "./components/AppToast.vue";
 import CloudHealthDialog from "./components/CloudHealthDialog.vue";
@@ -27,7 +28,7 @@ import UpdateDialog from "./components/UpdateDialog.vue";
 import TutorialOverlay from "./components/TutorialOverlay.vue";
 import { advanceTutorial, createTutorialState, loadTutorialProgress, saveTutorialProgress, shouldOfferTutorial, tutorialViews, type TutorialEvent, type TutorialProgress, type TutorialState } from "./services/onboarding";
 import ThemedSelect, { type ThemedSelectOption } from "./components/ThemedSelect.vue";
-import type { ArchiveRecord, ArchiveSource, CategoryRecord, CreateArchiveInput, RepositoryInfo, SnapshotRecord, SourceKind } from "./domain";
+import type { ArchiveRecord, ArchiveSource, CategoryRecord, CreateArchiveInput, DroppedPath, RepositoryInfo, SnapshotRecord, SourceKind } from "./domain";
 import { archiveRepository, isTauriRuntime } from "./services/repository";
 import { cloudRepository, syncArchivesAcrossSources, type CloudSyncResult } from "./services/cloud";
 import { runCloudHealthCheck, type CloudHealthCheckItem } from "./services/cloudHealthCheck";
@@ -132,6 +133,9 @@ const treeMenuStyle = computed(() => treeMenuAnchor.value
   : undefined);
 const confirmRequest = ref<{ title: string; message: string; confirmLabel: string; destructive: boolean }>();
 const closeRequestOpen = ref(false);
+let unlistenDragDrop: UnlistenFn | undefined;
+const dragDropActive = ref(false);
+const droppedDefaultName = ref<string>();
 const updateChecking = ref(false);
 const availableUpdate = ref<ReleaseUpdate>();
 const tutorial = ref<TutorialState>({ step: "inactive", route: "local" });
@@ -474,6 +478,7 @@ function openCreateArchive() {
   editingArchive.value = undefined;
   highlightSources.value = false;
   pendingSources.value = [];
+  droppedDefaultName.value = undefined;
   createArchiveError.value = undefined;
   createDialogOpen.value = true;
 }
@@ -488,6 +493,7 @@ function openArchiveEditor(archive: ArchiveRecord, highlightSourceSelection = fa
   editingArchive.value = archive;
   highlightSources.value = highlightSourceSelection;
   pendingSources.value = archive.sources.map((source) => ({ ...source }));
+  droppedDefaultName.value = undefined;
   createArchiveError.value = undefined;
   archiveMenuOpen.value = false;
   createDialogOpen.value = true;
@@ -497,6 +503,7 @@ function closeArchiveDialog() {
   createDialogOpen.value = false;
   editingArchive.value = undefined;
   highlightSources.value = false;
+  droppedDefaultName.value = undefined;
 }
 
 function requestConfirmation(title: string, message: string, confirmLabel: string, destructive = false): Promise<boolean> {
@@ -528,7 +535,21 @@ async function pickSources(kind: Exclude<SourceKind, "registry">) {
   }
 }
 
-async function createArchive(input: CreateArchiveInput) {
+async function persistArchiveDefaults(input: CreateArchiveInput): Promise<void> {
+  try {
+    await saveAppSettings({
+      ...appSettings,
+      defaultStoragePolicy: input.storagePolicy,
+      defaultAutomaticUpload: input.automaticUploadEnabled,
+      createInitialSnapshot: input.createInitialSnapshot,
+    });
+    showNotice(t("已将本次选项保存为新存档默认值"));
+  } catch (error) {
+    showNotice(readableError(error), "error");
+  }
+}
+
+async function createArchive(input: CreateArchiveInput, options: { saveAsDefaults?: boolean } = {}) {
   if (["sources", "name", "storage", "automation"].includes(tutorial.value.step)) {
     showNotice(t("请先阅读当前提示，完成保存方式与自动化介绍后再创建。"), "info");
     return;
@@ -565,6 +586,7 @@ async function createArchive(input: CreateArchiveInput) {
     await refreshArchives(archive.id);
     await refreshSnapshots(archive.id);
     await refreshRepositoryInfo();
+    if (options.saveAsDefaults) await persistArchiveDefaults(input);
     if (input.createInitialSnapshot) {
       tutorialEvent({ type: "archive-created", archiveId: archive.id });
       await createSnapshot(t("初始版本"));
@@ -1022,6 +1044,62 @@ function removeArchiveTag(tag: string) {
   void replaceArchiveTags((selectedArchive.value?.tags ?? []).filter((item) => item !== tag));
 }
 
+const externalDropBlocked = computed(() => (
+  createDialogOpen.value || categoryDialogOpen.value || settingsOpen.value || cloudSettingsOpen.value
+  || steamScanOpen.value || cloudHealthDialogOpen.value || backupHealthOpen.value || closeRequestOpen.value
+  || activityPanelOpen.value || sortMenuOpen.value || archiveMenuOpen.value || Boolean(treeMenu.value)
+  || Boolean(confirmRequest.value) || Boolean(registryRestoreRequest.value) || Boolean(availableUpdate.value)
+  || tutorialActive.value
+));
+
+function blockExternalFileNavigation(event: DragEvent): void {
+  // A dropped file must never navigate the webview away from the application.
+  if (event.dataTransfer?.types?.includes("Files")) event.preventDefault();
+}
+
+function defaultNameForDrop(items: DroppedPath[]): string | undefined {
+  if (items.length !== 1) return undefined;
+  const [item] = items;
+  if (item.kind === "folder") return item.name;
+  return item.path.replace(/[\\/]+$/, "").split(/[\\/]/).at(-2) || undefined;
+}
+
+async function handleExternalDrop(paths: string[]): Promise<void> {
+  dragDropActive.value = false;
+  if (externalDropBlocked.value || !paths.length) return;
+  if (!isTauriRuntime) {
+    showNotice(t("外部拖入仅支持 Windows 桌面版 Chronicle"), "info");
+    return;
+  }
+  try {
+    const described = await invoke<DroppedPath[]>("describe_dropped_paths", { paths });
+    const usable = described.filter((item) => item.exists);
+    const missing = described.filter((item) => !item.exists);
+    if (!usable.length) {
+      showNotice(t("拖入的路径不可访问：{value1}", { value1: missing.map((item) => item.path).join("、") }), "error");
+      return;
+    }
+    const known = new Set(pendingSources.value.map((source) => `${source.kind}:${source.path}`));
+    const sources: ArchiveSource[] = usable
+      .filter((item) => !known.has(`${item.kind}:${item.path}`))
+      .map((item) => ({ id: crypto.randomUUID(), name: item.name, path: item.path, kind: item.kind }));
+    if (!sources.length) {
+      showNotice(t("拖入的内容已在这个存档中"), "info");
+      return;
+    }
+    editingArchive.value = undefined;
+    highlightSources.value = false;
+    pendingSources.value = sources;
+    droppedDefaultName.value = defaultNameForDrop(usable);
+    createArchiveError.value = missing.length
+      ? t("部分路径不可访问，已跳过：{value1}", { value1: missing.map((item) => item.path).join("、") })
+      : undefined;
+    createDialogOpen.value = true;
+  } catch (error) {
+    showNotice(readableError(error), "error");
+  }
+}
+
 function startArchiveDrag(archiveId: string, event: DragEvent) {
   draggedCategoryId.value = undefined;
   draggedArchiveId.value = archiveId;
@@ -1143,6 +1221,8 @@ watch(selectedSnapshot, (snapshot) => {
 });
 onMounted(async () => {
   window.addEventListener("keydown", handleShortcut);
+  window.addEventListener("dragover", blockExternalFileNavigation);
+  window.addEventListener("drop", blockExternalFileNavigation);
   refreshCurrentTime();
   try {
     await initializeSettings();
@@ -1164,6 +1244,11 @@ onMounted(async () => {
       } catch (error) { showNotice(backupAutomationLabel(String(error)), 'error'); }
       await listen("chronicle-close-requested", () => { closeRequestOpen.value = true; });
       await listen("chronicle-hidden-to-tray", () => { void notifyTrayBackground(appSettings.notifications); });
+      unlistenDragDrop = await getCurrentWebview().onDragDropEvent(async (event) => {
+        if (event.payload.type === "drop") { await handleExternalDrop(event.payload.paths); return; }
+        if (event.payload.type === "leave") { dragDropActive.value = false; return; }
+        dragDropActive.value = !externalDropBlocked.value;
+      });
     }
     await refreshCategories();
     await refreshArchives();
@@ -1180,6 +1265,9 @@ onMounted(async () => {
 });
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", handleShortcut);
+  window.removeEventListener("dragover", blockExternalFileNavigation);
+  window.removeEventListener("drop", blockExternalFileNavigation);
+  unlistenDragDrop?.();
   window.clearTimeout(noticeTimer);
   window.clearTimeout(clockTimer);
 });
@@ -1283,6 +1371,7 @@ onBeforeUnmount(() => {
     <SteamScanDialog v-if="steamScanOpen" @close="steamScanOpen = false" @saved="handleSettingsChanged" />
     <button class="floating-theme-toggle" :class="{ 'is-dark': appSettings.colorMode === 'dark' }" :aria-label="appSettings.colorMode === 'dark' ? t('切换到日间模式') : t('切换到夜间模式')" :title="appSettings.colorMode === 'dark' ? t('切换到日间模式') : t('切换到夜间模式')" :aria-pressed="appSettings.colorMode === 'dark'" @click="toggleColorMode"><Sun v-if="appSettings.colorMode === 'dark'" :size="17" /><Moon v-else :size="17" /></button>
     <UpdateDialog v-if="availableUpdate && !tutorialActive" :update="availableUpdate" @close="availableUpdate = undefined" />
+    <div v-if="dragDropActive" class="drop-overlay" aria-hidden="true"><UploadCloud :size="34" /><b>{{ t('松开以添加存档') }}</b><small>{{ t('支持文件和文件夹') }}</small></div>
     <CloudCenterDialog v-if="cloudSettingsOpen" @close="cloudSettingsOpen = false" @saved="handleCloudSettingsChanged" @downloaded="handleCloudDownload" @settings-downloaded="handleCloudSettingsDownload" />
     <CloudHealthDialog v-if="cloudHealthDialogOpen" :items="cloudHealthCheckItems" :running="cloudHealthCheckRunning" @close="cloudHealthDialogOpen = false" />
     <CreateCategoryDialog :tutorial-progress="tutorialProgress" @tutorial-tip="rememberTutorialTip"
@@ -1298,6 +1387,9 @@ onBeforeUnmount(() => {
       v-if="createDialogOpen"
       :sources="pendingSources"
       :default-initial-snapshot="appSettings.createInitialSnapshot"
+      :default-storage-policy="appSettings.defaultStoragePolicy"
+      :default-automatic-upload="appSettings.defaultAutomaticUpload"
+      :default-name="droppedDefaultName"
       :picking="pickingSource"
       :submitting="creatingArchive"
       :error="createArchiveError"

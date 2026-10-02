@@ -38,6 +38,34 @@ npm --prefix apps/desktop ci
 
 ## 2. 本地出一个可测试的 exe
 
+### 一键方式（推荐）
+
+在 VS Code 里按 **Ctrl+Shift+B**（或在命令面板运行 `Tasks: Run Task`）：
+
+| 任务 | 说明 |
+| --- | --- |
+| 打包 exe（快速） | 默认任务，只编译 exe；产物会复制到 `build\Chronicle.exe` |
+| 打包 exe 并启动 | 编译完直接运行 |
+| 完整发行打包 | 安装器 + 便携版 zip |
+| 开发模式（热重载） | 改前端秒级生效，**日常改功能用这个，不必打包** |
+
+不在 VS Code 里时，双击仓库根目录的 `build-exe.cmd` 效果相同。
+
+底层脚本是 `scripts/build-app.ps1`，也可以直接调用：
+
+```powershell
+.\scripts\build-app.ps1                  # 只出 exe
+.\scripts\build-app.ps1 -Run             # 出 exe 并启动
+.\scripts\build-app.ps1 -Mode bundle     # 安装器 + 便携版
+.\scripts\build-app.ps1 -StopRunning     # 先自动关闭正在运行的实例
+```
+
+> **重要**：如果 Chronicle 正在运行，它会锁住 `Chronicle.exe`，导致 Tauri 报
+> `failed to rename app binary (os error 5)`。请先从托盘退出应用，或加 `-StopRunning`
+> 让脚本自动关闭（VS Code 任务与 `build-exe.cmd` 已默认带上该开关）。
+
+### 手动方式
+
 最快路径，只编译不打包安装器：
 
 ```powershell
@@ -180,6 +208,7 @@ gh release create v1.3.4 `
 | 应用内更新提示「更新安装包来源无效」 | Release 资产命名不符合更新器规则。必须是 `Chronicle_<版本>_x64-setup.exe`，且挂在 `github.com/ThermalEX/Chronicle/releases/download/<tag>/` 下 |
 | 应用内更新校验失败 | `SHA256SUMS.txt` 格式不对。必须是 `<小写hex><两空格><文件名>`，且只有两列 |
 | `target` 目录撑满 P 盘 | `cargo clean` 清理；或把 `CARGO_TARGET_DIR` 指向空间更大的盘（例如 E:） |
+| 打包报 `failed to rename app binary (os error 5)` | Chronicle 正在运行并锁住了 exe。从托盘退出，或用 `-StopRunning` |
 
 ## 9. 关于代码签名
 

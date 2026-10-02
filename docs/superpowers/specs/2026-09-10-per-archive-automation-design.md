@@ -7,6 +7,8 @@ Move automatic backup and upload decisions from application settings to each arc
 ## Behavior
 
 - Every archive stores `autoBackupEnabled` and `automaticUploadEnabled`, both defaulting to `false` for migrations and new archives.
+- New archives derive their initial values from the application settings `defaultStoragePolicy` (`local` by default) and `defaultAutomaticUpload` (`false` by default). The defaults only seed the create dialog for archives created afterwards and never change existing archives.
+- Because uploading requires `storagePolicy: local_and_remote`, a default of `defaultAutomaticUpload: true` with `defaultStoragePolicy: local` has no effect until the policy changes. The settings UI states this relationship explicitly.
 - Auto backup watches an archive's local sources and creates a snapshot after the configured quiet period.
 - Auto upload uploads every newly-created snapshot for an archive whose auto-upload option is enabled and whose storage policy includes the cloud.
 - Enabling both options makes a source change create and then upload a snapshot. Enabling either option alone retains its independent behavior.

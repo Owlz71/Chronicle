@@ -88,6 +88,13 @@ export type RepositoryInfo = {
   totalBytes: number;
 };
 
+export type DroppedPath = {
+  path: string;
+  name: string;
+  kind: "file" | "folder";
+  exists: boolean;
+};
+
 export type StorageLocationInfo = {
   path: string;
   defaultPath: string;

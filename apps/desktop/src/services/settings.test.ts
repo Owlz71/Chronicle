@@ -25,6 +25,16 @@ describe("shortcutFromKeyboardEvent", () => {
   });
 });
 
+describe("normalizeAppSettings", () => {
+  it("defaults and validates the new-archive storage options", () => {
+    expect(normalizeAppSettings({}).defaultStoragePolicy).toBe("local");
+    expect(normalizeAppSettings({}).defaultAutomaticUpload).toBe(false);
+    expect(normalizeAppSettings({ defaultStoragePolicy: "local_and_remote", defaultAutomaticUpload: true }))
+      .toMatchObject({ defaultStoragePolicy: "local_and_remote", defaultAutomaticUpload: true });
+    expect(normalizeAppSettings({ defaultStoragePolicy: "nonsense" as never }).defaultStoragePolicy).toBe("local");
+  });
+});
+
 describe("cloudLibraryIndicator", () => {
   const source = {
     id: "github-1", name: "GitHub 资料库", provider: "legacy_github" as const, endpoint: "", username: "",

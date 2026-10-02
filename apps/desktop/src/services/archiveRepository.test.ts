@@ -146,6 +146,25 @@ describe("ArchiveRepository", () => {
     expect(history[0].safety).toBe(true);
   });
 
+  it("keeps snapshot timestamps strictly increasing for same-millisecond writes", async () => {
+    const repository = new BrowserArchiveRepository();
+    const handle = new MemoryFileHandle("settings.json", "version one");
+    const archive = archiveFor(handle);
+    await repository.putArchive(archive);
+
+    const first = await repository.createSnapshot(archive, "初始版本");
+    handle.setContent("version two");
+    const second = await repository.createSnapshot(archive, "修改版本");
+    handle.setContent("version three");
+    const third = await repository.createSnapshot(archive, "再次修改");
+
+    expect(second.createdAt).toBeGreaterThan(first.createdAt);
+    expect(third.createdAt).toBeGreaterThan(second.createdAt);
+
+    const history = await repository.listSnapshots(archive.id);
+    expect(history.map((item) => item.title)).toEqual(["再次修改", "修改版本", "初始版本"]);
+  });
+
   it("persists both per-archive automation options", async () => {
     const repository = new BrowserArchiveRepository();
     const archive = archiveFor(new MemoryFileHandle("settings.json", "version one"));

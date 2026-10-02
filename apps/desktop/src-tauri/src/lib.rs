@@ -133,6 +133,7 @@ pub fn run() {
             onboarding::save_onboarding,
             commands::list_entries,
             commands::repository_info,
+            commands::describe_dropped_paths,
             commands::open_repository_folder,
             storage_migration::storage_location_info,
             storage_migration::migrate_storage_location,
