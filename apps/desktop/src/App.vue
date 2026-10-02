@@ -25,6 +25,7 @@ import BackupHealthDialog from "./components/BackupHealthDialog.vue";
 import { setBackupTrigger, getBackupRuntimeStates, subscribeBackupRuntime, acceptBackupRuntime, backupAutomationLabel, backupAutomationSupported, type BackupRuntimeStatus, type BackupTriggerConfig } from "./services/backupAutomation";
 import SteamScanDialog from "./components/SteamScanDialog.vue";
 import SaveSearchDialog from "./components/SaveSearchDialog.vue";
+import ExePickerDialog from "./components/ExePickerDialog.vue";
 import AutoSyncDialog from "./components/AutoSyncDialog.vue";
 import PendingBackupDialog from "./components/PendingBackupDialog.vue";
 import { checkPendingChanges, type PendingChange } from "./services/backupHealth";
@@ -35,7 +36,7 @@ import { advanceTutorial, createTutorialState, loadTutorialProgress, saveTutoria
 import ThemedSelect, { type ThemedSelectOption } from "./components/ThemedSelect.vue";
 import type { ArchiveRecord, ArchiveSource, CategoryRecord, CreateArchiveInput, DroppedPath, RepositoryInfo, SnapshotRecord, SourceKind } from "./domain";
 import { autoScrollDelta, dropTargetAt, exceedsDragThreshold } from "./services/pointerDrag";
-import { isExecutablePath, searchAppdataSaves, type SaveSearchHit } from "./services/saveSearch";
+import { engineLabel, inspectDroppedGame, isExecutablePath, searchAppdataSaves, searchGameSaves, type DroppedGameInspection, type GameEngine, type SaveSearchHit } from "./services/saveSearch";
 import { archiveRepository, isTauriRuntime } from "./services/repository";
 import { cloudRepository, syncArchivesAcrossSources, type CloudSyncResult } from "./services/cloud";
 import { runCloudHealthCheck, type CloudHealthCheckItem } from "./services/cloudHealthCheck";
@@ -153,6 +154,9 @@ const saveSearchExe = ref("");
 const saveSearchHits = ref<SaveSearchHit[]>([]);
 const saveSearchBusy = ref(false);
 const saveSearchError = ref("");
+const saveSearchEngine = ref("");
+const exeChoiceRequest = ref<DroppedGameInspection>();
+let exeChoiceResolver: ((path: string | null) => void) | undefined;
 const presetBackupTrigger = ref<BackupTriggerConfig>();
 const autoSyncOpen = ref(false);
 const autoSyncRunning = ref(false);
@@ -965,14 +969,16 @@ function maybeRunAutoSync(): void {
 
 async function handleAutoSyncSave(payload: { enabled: boolean; intervalDays: number; syncNow: boolean }): Promise<void> {
   autoSyncOpen.value = false;
-  const enabling = payload.enabled && !appSettings.autoSyncEnabled;
+  // The clock starts only the first time automatic sync is turned on. Re-saving or
+  // re-enabling must not move the baseline, otherwise every settings change would restart
+  // the interval and postpone the sync forever.
+  const startingClock = payload.enabled && appSettings.autoSyncLastAt === 0;
   try {
     await saveAppSettings({
       ...appSettings,
       autoSyncEnabled: payload.enabled,
       autoSyncIntervalDays: payload.intervalDays,
-      // Turning it on starts the clock now, so the first automatic sync waits a full interval.
-      autoSyncLastAt: enabling ? Date.now() : appSettings.autoSyncLastAt,
+      autoSyncLastAt: startingClock ? Date.now() : appSettings.autoSyncLastAt,
     });
   } catch (error) {
     showNotice(readableError(error), "error");
@@ -1188,7 +1194,7 @@ const externalDropBlocked = computed(() => (
   || steamScanOpen.value || cloudHealthDialogOpen.value || backupHealthOpen.value || closeRequestOpen.value
   || activityPanelOpen.value || sortMenuOpen.value || archiveMenuOpen.value || Boolean(treeMenu.value)
   || Boolean(confirmRequest.value) || Boolean(registryRestoreRequest.value) || Boolean(availableUpdate.value)
-  || saveSearchOpen.value || autoSyncOpen.value || Boolean(pendingBackupRequest.value)
+  || saveSearchOpen.value || autoSyncOpen.value || Boolean(pendingBackupRequest.value) || Boolean(exeChoiceRequest.value)
   || tutorialActive.value
 ));
 
@@ -1219,13 +1225,13 @@ async function handleExternalDrop(paths: string[]): Promise<void> {
       showNotice(t("拖入的路径不可访问：{value1}", { value1: missing.map((item) => item.path).join("、") }), "error");
       return;
     }
-    const droppedExecutable = usable.length === 1 && usable[0].kind === "file" && isExecutablePath(usable[0].path)
-      ? usable[0]
+    const single = usable.length === 1 ? usable[0] : undefined;
+    // A single game folder or executable is identified first, so the engine can point at
+    // the saves instead of the whole installation.
+    const gameCandidate = single && backupAutomationSupported() && (single.kind === "folder" || isExecutablePath(single.path))
+      ? single
       : undefined;
-    if (droppedExecutable && backupAutomationSupported()) {
-      void openSaveSearch(droppedExecutable.path);
-      return;
-    }
+    if (gameCandidate && await startGameFlow(gameCandidate.path)) return;
     const known = new Set(pendingSources.value.map((source) => `${source.kind}:${source.path}`));
     const sources: ArchiveSource[] = usable
       .filter((item) => !known.has(`${item.kind}:${item.path}`))
@@ -1248,19 +1254,55 @@ async function handleExternalDrop(paths: string[]): Promise<void> {
   }
 }
 
-async function openSaveSearch(executablePath: string): Promise<void> {
+async function openSaveSearch(executablePath: string, context?: { root: string; engine: GameEngine }): Promise<void> {
   saveSearchExe.value = executablePath;
+  saveSearchEngine.value = context ? engineLabel(context.engine) : "";
   saveSearchHits.value = [];
   saveSearchError.value = "";
   saveSearchOpen.value = true;
   saveSearchBusy.value = true;
   try {
-    saveSearchHits.value = await searchAppdataSaves(executablePath);
+    saveSearchHits.value = context
+      ? await searchGameSaves(context.root, executablePath, context.engine)
+      : await searchAppdataSaves(executablePath);
   } catch (error) {
     saveSearchError.value = readableError(error);
   } finally {
     saveSearchBusy.value = false;
   }
+}
+
+function requestExeChoice(inspection: DroppedGameInspection): Promise<string | null> {
+  exeChoiceRequest.value = inspection;
+  return new Promise((resolve) => { exeChoiceResolver = resolve; });
+}
+
+function answerExeChoice(path: string | null): void {
+  exeChoiceRequest.value = undefined;
+  const resolve = exeChoiceResolver;
+  exeChoiceResolver = undefined;
+  resolve?.(path);
+}
+
+/**
+ * Recognises what was dropped and, when it looks like a game, jumps straight to the save
+ * location. Returns `true` when the drop was handled here, so nothing else runs for it.
+ */
+async function startGameFlow(path: string): Promise<boolean> {
+  let inspection: DroppedGameInspection;
+  try {
+    inspection = await inspectDroppedGame(path);
+  } catch {
+    // Detection is best effort: an unreadable folder still becomes a plain source.
+    return false;
+  }
+  if (!inspection.exeCandidates.length) return false;
+  const executable = inspection.exeCandidates.length === 1
+    ? inspection.exeCandidates[0].path
+    : await requestExeChoice(inspection);
+  if (!executable) return true;
+  await openSaveSearch(executable, { root: inspection.root, engine: inspection.engine });
+  return true;
 }
 
 function closeSaveSearch(): void {
@@ -1274,7 +1316,7 @@ function selectSaveSearchHit(hit: SaveSearchHit): void {
   closeSaveSearch();
   editingArchive.value = undefined;
   highlightSources.value = false;
-  pendingSources.value = [{ id: crypto.randomUUID(), name: hit.name, path: hit.path, kind: "folder" }];
+  pendingSources.value = [{ id: crypto.randomUUID(), name: hit.name, path: hit.path, kind: hit.kind }];
   droppedDefaultName.value = hit.name;
   presetBackupTrigger.value = executablePath
     ? { mode: "game_exit", executablePath, quietSeconds: 5 }
@@ -1646,7 +1688,8 @@ onBeforeUnmount(() => {
       @submit="createCategory"
     />
     <TutorialOverlay v-if="tutorialActive && !steamScanOpen && !confirmRequest && !closeRequestOpen"  :language-saving="tutorialLanguageSaving" @language-change="changeTutorialLanguage" :appearance-page="tutorial.step === 'appearance'" :appearance="normalizeAppearance(appSettings)" :appearance-saving="tutorialAppearanceSaving" @appearance-change="changeTutorialAppearance" :welcome="tutorial.step === 'welcome'" :route="tutorial.step === 'route'" :finish="tutorial.step === 'finish'" :step="tutorialViews[tutorial.step]" :has-archive="Boolean(selectedArchive)" @start="tutorialEvent({ type: 'start' })" @skip="tutorialEvent({ type: 'skip' })" @local="localTutorial" @cloud="tutorialEvent({ type: 'choose-cloud' })" @next="nextTutorial" @use-existing="useExistingTutorial" />
-    <SaveSearchDialog v-if="saveSearchOpen" :executable-path="saveSearchExe" :hits="saveSearchHits" :busy="saveSearchBusy" :error="saveSearchError" @close="closeSaveSearch" @select="selectSaveSearchHit" />
+    <ExePickerDialog v-if="exeChoiceRequest" :candidates="exeChoiceRequest.exeCandidates" :recommended="exeChoiceRequest.recommendedExe" :engine-label="engineLabel(exeChoiceRequest.engine)" @cancel="answerExeChoice(null)" @select="answerExeChoice" />
+    <SaveSearchDialog v-if="saveSearchOpen" :executable-path="saveSearchExe" :hits="saveSearchHits" :busy="saveSearchBusy" :error="saveSearchError" :engine="saveSearchEngine" @close="closeSaveSearch" @select="selectSaveSearchHit" />
     <CreateArchiveDialog :tutorial-progress="tutorialProgress" @tutorial-tip="rememberTutorialTip"
       v-if="createDialogOpen"
       :sources="pendingSources"

@@ -5,6 +5,7 @@ mod cloud;
 mod commands;
 mod galgame_scan;
 mod game_exit;
+mod game_launch;
 mod language;
 mod onboarding;
 mod process_monitor;
@@ -136,6 +137,8 @@ pub fn run() {
             commands::repository_info,
             commands::describe_dropped_paths,
             save_search::search_appdata_saves,
+            game_launch::inspect_dropped_game,
+            game_launch::search_game_saves,
             commands::open_repository_folder,
             storage_migration::storage_location_info,
             storage_migration::migrate_storage_location,

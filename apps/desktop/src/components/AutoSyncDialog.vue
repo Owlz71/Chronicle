@@ -84,7 +84,7 @@ onMounted(() => closeButton.value?.focus());
           <span>
             <b>{{ t("开启自动同步") }}</b>
             <small>{{
-              t("按下面的间隔检查一次，到时间才同步；程序启动时也会检查。")
+              t("按下面的间隔检查一次，到时间才同步；程序启动时也会检查。重新保存设置不会重置计时。")
             }}</small>
           </span>
           <input v-model="enabled" type="checkbox" role="switch" />

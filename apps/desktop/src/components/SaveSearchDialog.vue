@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { AlertCircle, FolderSearch, Search, Sparkles, X } from "@lucide/vue";
+import { AlertCircle, File, Folder, FolderSearch, Search, Sparkles, X } from "@lucide/vue";
 import { computed, onMounted, ref } from "vue";
 import { createBackdropDismissal } from "../services/dialogDismissal";
 import { t } from "../services/i18n";
@@ -10,6 +10,8 @@ const props = defineProps<{
   hits: SaveSearchHit[];
   busy: boolean;
   error?: string;
+  /** Engine name shown above the title when detection found one. */
+  engine?: string;
 }>();
 const emit = defineEmits<{ close: []; select: [hit: SaveSearchHit] }>();
 const closeButton = ref<HTMLButtonElement>();
@@ -39,7 +41,7 @@ onMounted(() => closeButton.value?.focus());
       <header>
         <span><FolderSearch :size="20" aria-hidden="true" /></span>
         <div>
-          <p>{{ t("在 AppData 中搜索存档") }}</p>
+          <p>{{ engine || t("在 AppData 中搜索存档") }}</p>
           <h2 id="save-search-title">{{ executableLabel(executablePath) }}</h2>
         </div>
         <button
@@ -60,7 +62,7 @@ onMounted(() => closeButton.value?.focus());
         <AlertCircle :size="15" aria-hidden="true" />{{ error }}
       </p>
       <p v-else-if="!hits.length" class="state">
-        {{ t("没有找到名字匹配的文件夹，可以关闭后手动选择存档路径。") }}
+        {{ t("没有找到匹配的存档位置，可以关闭后手动选择。") }}
       </p>
       <template v-else>
         <p class="summary">
@@ -79,6 +81,8 @@ onMounted(() => closeButton.value?.focus());
               @click="emit('select', hit)"
             >
               <span class="hit-name">
+                <Folder v-if="hit.kind === 'folder'" :size="15" aria-hidden="true" />
+                <File v-else :size="15" aria-hidden="true" />
                 <strong>{{ hit.name }}</strong>
                 <em v-if="hit.exact" class="badge">
                   <Sparkles :size="11" aria-hidden="true" />{{
@@ -225,6 +229,10 @@ header button:hover {
   gap: 8px;
   color: var(--text);
   font-size: 12px;
+}
+.hit-name svg {
+  flex: none;
+  color: var(--text-3);
 }
 .badge {
   display: inline-flex;

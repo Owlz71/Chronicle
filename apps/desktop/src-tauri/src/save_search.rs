@@ -51,9 +51,31 @@ const NOISE_TOKENS: &[&str] = &[
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveSearchHit {
-    path: String,
-    name: String,
-    exact: bool,
+    pub path: String,
+    pub name: String,
+    pub exact: bool,
+    /// `folder` or `file`; some engines keep saves as loose files next to the game.
+    pub kind: String,
+}
+
+impl SaveSearchHit {
+    pub(crate) fn folder(path: String, name: String, exact: bool) -> Self {
+        Self {
+            path,
+            name,
+            exact,
+            kind: "folder".to_owned(),
+        }
+    }
+
+    pub(crate) fn file(path: String, name: String) -> Self {
+        Self {
+            path,
+            name,
+            exact: false,
+            kind: "file".to_owned(),
+        }
+    }
 }
 
 struct Candidate {
@@ -65,11 +87,7 @@ struct Candidate {
 
 impl Candidate {
     fn to_hit(&self) -> SaveSearchHit {
-        SaveSearchHit {
-            path: self.path.clone(),
-            name: self.name.clone(),
-            exact: self.tier == 0,
-        }
+        SaveSearchHit::folder(self.path.clone(), self.name.clone(), self.tier == 0)
     }
 }
 
