@@ -8,6 +8,8 @@ import type {
   SnapshotProgress,
   SnapshotRecord,
   RepositoryInfo,
+  StorageLocationInfo,
+  StorageMigrationResult,
   RecycleItem,
   SourceKind,
 } from "../domain";
@@ -148,6 +150,23 @@ export class BrowserArchiveRepository {
 
   async openRepositoryFolder(): Promise<void> {
     throw new Error(t("浏览器模式没有可打开的资料库文件夹"));
+  }
+
+  async getStorageLocation(): Promise<StorageLocationInfo> {
+    const info = await this.getRepositoryInfo();
+    return { path: info.path, defaultPath: info.path, customPath: null, portable: false, unavailable: false, totalBytes: info.totalBytes };
+  }
+
+  async migrateStorageLocation(): Promise<StorageMigrationResult> {
+    throw new Error(t("浏览器模式无法更改存储位置"));
+  }
+
+  async resetStorageLocation(): Promise<StorageMigrationResult> {
+    throw new Error(t("浏览器模式无法更改存储位置"));
+  }
+
+  async restartApp(): Promise<void> {
+    throw new Error(t("浏览器模式无法重启应用"));
   }
 
   async openArchiveStorage(): Promise<void> {

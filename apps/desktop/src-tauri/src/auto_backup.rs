@@ -383,6 +383,40 @@ impl AutoBackupManager {
         Ok(())
     }
 
+    /// Stops every watcher and invalidates in-flight workers.
+    ///
+    /// Used while the repository is being moved so no snapshot is written to
+    /// the old root. Call [`Self::resume`] to rebuild watchers after a failure.
+    pub fn suspend(&self) -> Result<(), String> {
+        let _refresh = self.refresh_lock.lock().map_err(|e| e.to_string())?;
+        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let _ = self.app.emit(
+            "backup-automation-reset",
+            serde_json::json!({"generation":generation}),
+        );
+        self.watchers
+            .lock()
+            .map_err(|_| "自动备份监听器不可用".to_owned())?
+            .clear();
+        self.pending
+            .lock()
+            .map_err(|_| "自动备份监听器不可用".to_owned())?
+            .clear();
+        self.games
+            .lock()
+            .map_err(|_| "自动备份监听器不可用".to_owned())?
+            .clear();
+        Ok(())
+    }
+
+    /// Rebuilds watchers after a suspended migration failed.
+    ///
+    /// # Errors
+    /// Returns an error when the watcher state cannot be rebuilt.
+    pub fn resume(&self) -> Result<(), String> {
+        self.refresh()
+    }
+
     pub fn refresh(&self) -> Result<(), String> {
         let _refresh = self.refresh_lock.lock().map_err(|e| e.to_string())?;
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;

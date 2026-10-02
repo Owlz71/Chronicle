@@ -1,0 +1,158 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# Required to create the GitHub Release and upload assets.
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish Windows release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Reads rust-toolchain.toml (1.97.0 with clippy and rustfmt).
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      # The tag is the single source of truth; refuse to publish when the
+      # manifests disagree so the updater never sees mismatched file names.
+      - name: Verify tag matches the manifest version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = (Get-Content "apps/desktop/package.json" -Raw | ConvertFrom-Json).version
+          if ($tag -ne "v$version") {
+            throw "Tag '$tag' does not match apps/desktop/package.json version '$version'."
+          }
+          "release_version=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Output "Releasing version $version"
+
+      - name: Install desktop dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Frontend tests
+        working-directory: apps/desktop
+        run: npm test
+
+      - name: Frontend typecheck
+        working-directory: apps/desktop
+        run: npm run typecheck
+
+      - name: Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Rust clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Rust tests
+        run: cargo test --workspace
+
+      - name: Tauri formatting
+        run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check
+
+      - name: Tauri tests
+        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+
+      - name: Build installer
+        working-directory: apps/desktop
+        run: npm run desktop:build
+
+      - name: Package portable edition
+        shell: pwsh
+        run: ./scripts/package-portable.ps1 -ExecutablePath "apps/desktop/src-tauri/target/release/Chronicle.exe" -OutputDirectory "apps/desktop/src-tauri/target/release/bundle/portable"
+
+      - name: Collect release assets and checksums
+        shell: pwsh
+        run: |
+          $version = $env:release_version
+          New-Item -ItemType Directory -Force -Path "release" | Out-Null
+          $installer = "apps/desktop/src-tauri/target/release/bundle/nsis/Chronicle_${version}_x64-setup.exe"
+          $portable = "apps/desktop/src-tauri/target/release/bundle/portable/Chronicle-${version}-windows-x64-portable.zip"
+          foreach ($path in @($installer, $portable)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Expected build artifact is missing: $path"
+            }
+          }
+          Copy-Item -LiteralPath $installer -Destination "release/"
+          Copy-Item -LiteralPath $portable -Destination "release/"
+
+          # The in-app updater parses '<lowercase-hex>  <file-name>' lines.
+          Get-ChildItem "release" -File |
+            Where-Object { $_.Name -ne "SHA256SUMS.txt" } |
+            ForEach-Object { "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant(), $_.Name } |
+            Set-Content -Encoding ascii -Path "release/SHA256SUMS.txt"
+          Get-Content "release/SHA256SUMS.txt"
+
+      - name: Prepare release notes
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $env:release_version
+          $header = @(
+            "Windows x64 build. This build is **unsigned**; verify your download against ``SHA256SUMS.txt``.",
+            "",
+            "- Installer: ``Chronicle_${version}_x64-setup.exe``",
+            "- Portable: ``Chronicle-${version}-windows-x64-portable.zip``"
+          )
+          $body = @()
+          $dedicated = "docs/release-notes/$tag.md"
+          if (Test-Path -LiteralPath $dedicated -PathType Leaf) {
+            $body = Get-Content -LiteralPath $dedicated -Raw
+          } else {
+            $changelog = Get-Content -LiteralPath "docs/changelog.md" -Raw
+            $pattern = "(?ms)^## v" + [regex]::Escape($version) + "[ \t]*\r?\n(.*?)(?=^## |\Z)"
+            $match = [regex]::Match($changelog, $pattern)
+            if ($match.Success) {
+              $body = $match.Groups[1].Value.Trim()
+            } else {
+              $body = "See ``docs/changelog.md`` for the full changelog."
+            }
+          }
+          (@($header + "" + $body) -join "`n") | Set-Content -Encoding utf8 -Path "release/notes.md"
+          Get-Content "release/notes.md"
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $env:release_version
+          $assets = @(
+            "release/Chronicle_${version}_x64-setup.exe",
+            "release/Chronicle-${version}-windows-x64-portable.zip",
+            "release/SHA256SUMS.txt"
+          )
+          $arguments = @("release", "create", $tag) + $assets + @(
+            "--title", "Chronicle $tag",
+            "--notes-file", "release/notes.md",
+            "--verify-tag"
+          )
+          if ($tag -match "-") {
+            $arguments += "--prerelease"
+            Write-Output "Publishing $tag as a prerelease"
+          }
+          gh @arguments
+
+      - name: Verify the published release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${{ github.ref_name }}" --repo $env:GITHUB_REPOSITORY --json tagName,isPrerelease,assets,url

@@ -9,6 +9,8 @@ import type {
   SnapshotProgress,
   SnapshotRecord,
   RepositoryInfo,
+  StorageLocationInfo,
+  StorageMigrationResult,
   RecycleItem,
   SourceKind,
   RegistryRestoreMode,
@@ -31,6 +33,10 @@ export interface ArchiveRepository {
   setArchiveTags(archiveId: string, tags: string[]): Promise<void>;
   getRepositoryInfo(): Promise<RepositoryInfo>;
   openRepositoryFolder(): Promise<void>;
+  getStorageLocation(): Promise<StorageLocationInfo>;
+  migrateStorageLocation(targetPath: string): Promise<StorageMigrationResult>;
+  resetStorageLocation(): Promise<StorageMigrationResult>;
+  restartApp(): Promise<void>;
   openArchiveStorage(archiveId: string): Promise<void>;
   openArchiveSources(archiveId: string): Promise<void>;
   openRecycleBin(recycleBinPath?: string): Promise<void>;
@@ -134,6 +140,22 @@ class TauriArchiveRepository implements ArchiveRepository {
 
   openRepositoryFolder(): Promise<void> {
     return invoke("open_repository_folder");
+  }
+
+  getStorageLocation(): Promise<StorageLocationInfo> {
+    return invoke("storage_location_info");
+  }
+
+  migrateStorageLocation(targetPath: string): Promise<StorageMigrationResult> {
+    return invoke("migrate_storage_location", { targetPath });
+  }
+
+  resetStorageLocation(): Promise<StorageMigrationResult> {
+    return invoke("reset_storage_location");
+  }
+
+  restartApp(): Promise<void> {
+    return invoke("restart_app");
   }
 
   openArchiveStorage(archiveId: string): Promise<void> {

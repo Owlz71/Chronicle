@@ -88,6 +88,22 @@ export type RepositoryInfo = {
   totalBytes: number;
 };
 
+export type StorageLocationInfo = {
+  path: string;
+  defaultPath: string;
+  customPath: string | null;
+  portable: boolean;
+  unavailable: boolean;
+  totalBytes: number;
+};
+
+export type StorageMigrationResult = {
+  path: string;
+  deletedOriginal: boolean;
+  warning: string | null;
+  restartRequired: boolean;
+};
+
 export type RecycleItem = {
   id: string;
   kind: "archive" | "category";

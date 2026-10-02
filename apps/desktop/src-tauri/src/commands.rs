@@ -197,7 +197,7 @@ pub fn repository_info(state: State<'_, AppState>) -> Result<RepositoryInfoDto, 
     })
 }
 
-fn settings_recycle_root(repository: &chronicle_storage::LocalRepository) -> Option<PathBuf> {
+pub(crate) fn settings_recycle_root(repository: &chronicle_storage::LocalRepository) -> Option<PathBuf> {
     let settings = repository.load_settings().ok()?;
     let enabled = settings
         .pointer("/app/recycleBinEnabled")

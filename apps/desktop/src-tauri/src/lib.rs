@@ -9,6 +9,7 @@ mod language;
 mod onboarding;
 mod process_monitor;
 mod steam_scan;
+mod storage_migration;
 mod storage_root;
 #[cfg(test)]
 mod storage_root_tests;
@@ -29,6 +30,7 @@ use tauri::{
 pub(crate) struct AppState {
     pub repository: Arc<Mutex<LocalRepository>>,
     pub auto_backup: auto_backup::AutoBackupManager,
+    pub storage: storage_root::StorageLayout,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -45,10 +47,11 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let executable = std::env::current_exe()?;
-            let repository_root = storage_root::resolve_repository_root(
+            let storage = storage_root::resolve_storage_layout(
                 &executable,
                 &app.path().app_local_data_dir()?,
             )?;
+            let repository_root = storage.root.clone();
             if let Err(error) = onboarding::initialize(&repository_root) {
                 eprintln!("Tutorial state initialization failed: {error}");
             }
@@ -62,6 +65,7 @@ pub fn run() {
                     app.handle().clone(),
                 ),
                 repository,
+                storage,
             });
             let (show_label, exit_label) = language::tray_labels(&saved_settings);
             let show = MenuItem::with_id(app, "show", show_label, true, None::<&str>)?;
@@ -130,6 +134,10 @@ pub fn run() {
             commands::list_entries,
             commands::repository_info,
             commands::open_repository_folder,
+            storage_migration::storage_location_info,
+            storage_migration::migrate_storage_location,
+            storage_migration::reset_storage_location,
+            storage_migration::restart_app,
             commands::open_entry_storage,
             commands::open_entry_sources,
             commands::open_recycle_bin,

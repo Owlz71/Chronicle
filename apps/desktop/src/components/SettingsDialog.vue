@@ -2,14 +2,15 @@
 import { t, locale } from "../services/i18n";
 import { BellRing, ClipboardCopy, FolderOpen, HardDrive, Info, Keyboard, RefreshCw, RotateCcw, Settings2, Trash2, Undo2, X } from "@lucide/vue";
 import { isTauri } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { appSettings, resetAppSettings, saveAppSettings, type AppSettings, type CloseBehavior, type UpdateChannel } from "../services/settings";
 import { type ColorMode, type ColorTheme } from "../services/appearance";
 import { archiveRepository } from "../services/repository";
 import { createBackdropDismissal } from "../services/dialogDismissal";
 import { diagnosticsRepository, type DiagnosticEntry } from "../services/diagnostics";
-import type { ArchiveRecord, RecycleItem } from "../domain";
+import type { ArchiveRecord, RecycleItem, StorageLocationInfo, StorageMigrationResult } from "../domain";
 import ConfirmDialog from "./ConfirmDialog.vue";
 import ShortcutRecorder from "./ShortcutRecorder.vue";
 import ThemedSelect, { type ThemedSelectOption } from "./ThemedSelect.vue";
@@ -38,8 +39,15 @@ const diagnosticsError = ref("");
 const repositoryPath = ref("");
 const automationArchives = ref<ArchiveRecord[]>([]);
 const automationBusy = ref(false);
+const storageInfo = ref<StorageLocationInfo | null>(null);
+const storageBusy = ref(false);
+const storageError = ref("");
+const storageRestarting = ref(false);
+const storageProgress = ref<{ copiedBytes: number; totalBytes: number } | null>(null);
+const storageConfirm = ref<{ title: string; message: string; run: () => Promise<void> }>();
 const confirmAction = ref<{ title: string; message: string; run: () => Promise<void> }>();
 const recycleLocation = computed(() => draft.recycleBinPath || (repositoryPath.value ? `${repositoryPath.value}\\recycle` : "Chronicle\\recycle"));
+const storageLocationPath = computed(() => storageInfo.value?.path || repositoryPath.value || t('正在读取…'));
 const allAutoBackupEnabled = computed(() => automationArchives.value.length > 0 && automationArchives.value.every((archive) => archive.autoBackupEnabled));
 const allAutomaticUploadEnabled = computed(() => automationArchives.value.length > 0 && automationArchives.value.every((archive) => archive.automaticUploadEnabled));
 const closeBehaviorOptions = computed<ThemedSelectOption[]>(() => [
@@ -206,6 +214,75 @@ async function openRecycleBin(): Promise<void> {
   }
 }
 
+async function loadStorageLocation(): Promise<void> {
+  if (!isTauri()) return;
+  storageRestarting.value = false;
+  try {
+    storageInfo.value = await archiveRepository.getStorageLocation();
+    repositoryPath.value = storageInfo.value.path;
+  } catch (error) {
+    storageError.value = error instanceof Error ? error.message : String(error);
+  }
+}
+
+async function openStorageFolder(): Promise<void> {
+  storageError.value = "";
+  try {
+    await archiveRepository.openRepositoryFolder();
+  } catch (error) {
+    storageError.value = error instanceof Error ? error.message : String(error);
+  }
+}
+
+function chooseStoragePath(): void {
+  if (!isTauri() || storageBusy.value || (storageInfo.value?.portable ?? false)) return;
+  void open({ directory: true, multiple: false, title: t('选择新的数据存储位置') }).then((selected) => {
+    if (typeof selected !== "string") return;
+    const target = selected.replace(/[\\/]+$/, "");
+    const current = (storageInfo.value?.path ?? "").replace(/[\\/]+$/, "");
+    if (!target || target === current) return;
+    storageConfirm.value = {
+      title: t('更改数据存储位置'),
+      message: t('将把数据迁移到“{value1}”，完成后删除原位置的数据并重启 Chronicle。', { value1: target }),
+      run: () => runStorageMigration(() => archiveRepository.migrateStorageLocation(target)),
+    };
+  });
+}
+
+function confirmResetStorageLocation(): void {
+  const info = storageInfo.value;
+  if (!info || info.portable || storageBusy.value) return;
+  storageConfirm.value = {
+    title: t('恢复默认存储位置'),
+    message: t('将把数据迁回默认文件夹“{value1}”，完成后删除原位置的数据并重启 Chronicle。', { value1: info.defaultPath }),
+    run: () => runStorageMigration(() => archiveRepository.resetStorageLocation()),
+  };
+}
+
+async function runStorageConfirm(): Promise<void> {
+  const action = storageConfirm.value;
+  storageConfirm.value = undefined;
+  if (action) await action.run();
+}
+
+async function runStorageMigration(action: () => Promise<StorageMigrationResult>): Promise<void> {
+  storageBusy.value = true;
+  storageError.value = "";
+  storageProgress.value = { copiedBytes: 0, totalBytes: storageInfo.value?.totalBytes ?? 0 };
+  try {
+    const result = await action();
+    if (result.warning) storageError.value = result.warning;
+    storageRestarting.value = true;
+    storageBusy.value = false;
+    void archiveRepository.restartApp().catch(() => undefined);
+  } catch (error) {
+    storageError.value = error instanceof Error ? error.message : String(error);
+    storageProgress.value = null;
+    storageBusy.value = false;
+    await loadStorageLocation();
+  }
+}
+
 async function toggleAllAutomation(kind: "backup" | "upload"): Promise<void> {
   automationBusy.value = true;
   try {
@@ -224,15 +301,24 @@ async function toggleAllAutomation(kind: "backup" | "upload"): Promise<void> {
   }
 }
 
+let unlistenStorageProgress: UnlistenFn | undefined;
+
 onMounted(() => {
   closeButton.value?.focus();
   void loadRecycleItems();
   void loadDiagnostics();
+  void loadStorageLocation();
   void archiveRepository.listArchives().then((archives) => { automationArchives.value = archives; });
-  void archiveRepository.getRepositoryInfo().then((info) => { repositoryPath.value = info.path; });
+  if (isTauri()) {
+    void listen<{ copiedBytes: number; totalBytes: number }>("chronicle-storage-migration", (event) => {
+      storageProgress.value = event.payload;
+    }).then((unlisten) => { unlistenStorageProgress = unlisten; });
+  }
 });
 
-watch(activeSection, (section) => { if (section === "notifications") void loadDiagnostics(); });
+onUnmounted(() => { unlistenStorageProgress?.(); });
+
+watch(activeSection, (section) => { if (section === "notifications") void loadDiagnostics(); if (section === "backup") void loadStorageLocation(); });
 </script>
 
 <template>
@@ -275,6 +361,15 @@ watch(activeSection, (section) => { if (section === "notifications") void loadDi
 
           <section v-else-if="activeSection === 'backup'" aria-labelledby="backup-title">
             <div class="section-heading"><h3 id="backup-title">{{ t('存储与备份') }}</h3><p>{{ t('设置新存档、监听合并时间和本地版本保留方式。') }}</p></div>
+            <div class="setting-group storage-location-group">
+              <div class="setting-row recycle-path"><span><b>{{ t('数据存储位置') }}</b><small>{{ t('快照、配置与缓存都保存在此文件夹；更改后会迁移数据并重启应用。') }}</small></span><div><button class="recycle-location" type="button" :title="storageLocationPath" :disabled="!isTauri() || storageBusy" @click="openStorageFolder">{{ storageLocationPath }}</button><button :aria-label="t('更改数据存储位置')" :title="t('更改数据存储位置')" :disabled="!isTauri() || storageBusy || (storageInfo?.portable ?? false)" @click="chooseStoragePath"><FolderOpen :size="15" /></button></div></div>
+              <div v-if="storageInfo && !storageInfo.portable && storageInfo.customPath" class="setting-row storage-reset"><span><b>{{ t('恢复默认位置') }}</b><small>{{ t('把数据迁回默认文件夹并重启应用。默认文件夹：') }}{{ storageInfo.defaultPath }}</small></span><div><button :disabled="storageBusy" @click="confirmResetStorageLocation">{{ t('恢复默认') }}</button></div></div>
+              <p v-if="storageInfo?.portable" class="storage-note">{{ t('便携模式下存储位置由程序所在文件夹决定，无法更改。') }}</p>
+              <p v-else-if="storageInfo?.unavailable" class="storage-note storage-warning" role="alert">{{ t('自定义存储位置不可用，已临时使用默认位置：{value1}', { value1: storageInfo.customPath ?? storageInfo.defaultPath }) }}</p>
+              <p v-if="storageBusy && storageProgress" class="storage-note" role="status">{{ t('正在迁移数据：{value1} / {value2}', { value1: formatBytes(storageProgress.copiedBytes), value2: formatBytes(storageProgress.totalBytes) }) }}</p>
+              <p v-else-if="storageRestarting" class="storage-note" role="status">{{ t('迁移完成，正在重启 Chronicle…') }}</p>
+              <p v-if="storageError" class="recycle-location-error" role="alert">{{ storageError }}</p>
+            </div>
             <div class="setting-group">
               <div class="setting-row automation-actions"><span><b>{{ t('备份健康检查') }}</b><small>{{ t('检查本地快照完整性、来源路径和未备份变化。') }}</small></span><div><button @click="emit('backup-health')">{{ t('打开健康检查') }}</button></div></div>
               <label class="setting-row"><span><b>{{ t('未备份变化提醒天数') }}</b></span><input id="health-stale-days" v-model.number="draft.backupHealthStaleDays" class="number-input" type="number" min="1" max="365" /></label>
@@ -327,6 +422,7 @@ watch(activeSection, (section) => { if (section === "notifications") void loadDi
       <footer><button class="reset-button" :disabled="saving" @click="reset"><RotateCcw :size="15" />{{ t('恢复默认设置') }}</button><div><button class="cancel-button" :disabled="saving" @click="emit('close')">{{ t('取消') }}</button><button class="save-button" :disabled="saving" @click="save">{{ saving ? t('保存中') : t('保存设置') }}</button></div></footer>
     </section>
     <ConfirmDialog v-if="confirmAction" :title="confirmAction.title" :message="confirmAction.message" :confirm-label="t('确定')" danger @cancel="confirmAction = undefined" @confirm="runRecycleAction" />
+    <ConfirmDialog v-if="storageConfirm" :title="storageConfirm.title" :message="storageConfirm.message" :confirm-label="t('迁移并重启')" danger @cancel="storageConfirm = undefined" @confirm="runStorageConfirm" />
   </div>
 </template>
 
@@ -385,7 +481,7 @@ footer button { min-height: 36px; padding: 0 13px; border-radius: 7px; font-size
 .recycle-list { overflow: hidden; border: 1px solid var(--border); border-radius: 10px; }.recycle-list article { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 66px; padding: 9px 12px; }.recycle-list article + article { border-top: 1px solid var(--border); }.recycle-icon { display: grid; place-items: center; width: 32px; height: 32px; color: #a52e28; background: #fff0ef; border-radius: 7px; }.recycle-list article > span:nth-child(2) { display: flex; min-width: 0; flex-direction: column; gap: 4px; }.recycle-list b { font-size: 11px; }.recycle-list small { overflow: hidden; color: var(--text-3); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }.recycle-list article > div { display: flex; gap: 6px; }.recycle-list button { display: inline-flex; align-items: center; gap: 5px; min-height: 32px; padding: 0 8px; color: var(--primary-dark); background: var(--primary-soft); border-radius: 6px; font-size: 9px; }.recycle-list button.danger { color: #a52e28; background: #fff0ef; }.recycle-list button:disabled { cursor: default; opacity: .55; }
 .recycle-empty { display: grid; place-items: center; min-height: 210px; gap: 7px; color: var(--text-3); background: #f8faf9; border: 1px dashed var(--border-2); border-radius: 10px; font-size: 10px; }.recycle-empty b { color: var(--text-2); font-size: 12px; }.recycle-error { padding: 10px 12px; color: #a52e28; background: #fff0ef; border-radius: 7px; font-size: 10px; }
 .diagnostics-actions { display: flex; gap: 7px; }.diagnostics-actions button { display: inline-flex; align-items: center; gap: 5px; min-height: 32px; padding: 0 9px; color: var(--primary-dark); background: var(--primary-soft); border-radius: 7px; font-size: 10px; font-weight: 650; }.diagnostics-actions .empty-button { color: #a52e28; background: #fff0ef; }.diagnostics-list { overflow: hidden; border: 1px solid var(--border); border-radius: 9px; }.diagnostics-list article { display: flex; align-items: start; justify-content: space-between; gap: 12px; padding: 12px; }.diagnostics-list article + article { border-top: 1px solid var(--border); }.diagnostics-list article > span { display: grid; min-width: 0; gap: 4px; }.diagnostics-list b { color: var(--text); font-size: 11px; }.diagnostics-list small { overflow: hidden; color: var(--text-3); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }.diagnostics-list code { overflow: auto; max-height: 88px; padding: 7px; color: var(--text-2); background: #f6f8f7; border-radius: 5px; font-family: ui-monospace, Consolas, monospace; font-size: 9px; line-height: 1.45; white-space: pre-wrap; }.diagnostics-list article > button { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 5px; min-height: 30px; padding: 0 8px; color: var(--text-2); background: #f2f6f4; border-radius: 6px; font-size: 9px; }
-.recycle-path { align-items: stretch; gap: 20px; }.recycle-path > span { flex: 0 1 34%; }.recycle-path > div { display: flex; flex: 1 1 auto; align-items: stretch; min-width: 0; gap: 7px; }.recycle-location { flex: 1 1 auto; min-width: 0; min-height: 46px; padding: 8px 10px; color: var(--text-2); background: #f8faf9; border: 1px solid var(--border-2); border-radius: 6px; font-size: 10px; line-height: 1.45; text-align: left; overflow-wrap: anywhere; white-space: normal; }.recycle-location:hover:not(:disabled) { color: var(--primary-dark); border-color: #8bbdb4; background: #fff; }.recycle-path > div > button:last-child { display: grid; flex: 0 0 34px; place-items: center; width: 34px; min-height: 46px; color: var(--primary-dark); background: var(--primary-soft); border-radius: 6px; }.recycle-path > div > button:last-child:hover:not(:disabled) { background: #d2e5e0; }.recycle-path button:disabled { color: var(--text-3); cursor: default; opacity: .55; }.recycle-location-error { margin: -3px 16px 10px; color: #a52e28; font-size: 9px; }@media (max-width: 1100px) { .settings-dialog { width: calc(100vw - 40px); height: calc(100vh - 40px); }.dialog-backdrop { padding: 20px; }.recycle-path { align-items: flex-start; flex-direction: column; }.recycle-path > span { flex-basis: auto; }.recycle-path > div { width: 100%; } }
+.recycle-path { align-items: stretch; gap: 20px; }.recycle-path > span { flex: 0 1 34%; }.recycle-path > div { display: flex; flex: 1 1 auto; align-items: stretch; min-width: 0; gap: 7px; }.recycle-location { flex: 1 1 auto; min-width: 0; min-height: 46px; padding: 8px 10px; color: var(--text-2); background: #f8faf9; border: 1px solid var(--border-2); border-radius: 6px; font-size: 10px; line-height: 1.45; text-align: left; overflow-wrap: anywhere; white-space: normal; }.recycle-location:hover:not(:disabled) { color: var(--primary-dark); border-color: #8bbdb4; background: #fff; }.recycle-path > div > button:last-child { display: grid; flex: 0 0 34px; place-items: center; width: 34px; min-height: 46px; color: var(--primary-dark); background: var(--primary-soft); border-radius: 6px; }.recycle-path > div > button:last-child:hover:not(:disabled) { background: #d2e5e0; }.recycle-path button:disabled { color: var(--text-3); cursor: default; opacity: .55; }.recycle-location-error { margin: -3px 16px 10px; color: #a52e28; font-size: 9px; }.storage-location-group { margin-bottom: 16px; }.storage-note { margin: 0; padding: 9px 16px; color: var(--text-3); background: var(--subtle); border-top: 1px solid var(--border); font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }.storage-warning { color: #a52e28; }.storage-reset button { display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 0 12px; color: var(--primary-dark); background: var(--primary-soft); border: 1px solid var(--border-2); border-radius: 7px; font-size: 11px; font-weight: 650; }.storage-reset button:hover:not(:disabled) { background: var(--hover); }.storage-reset button:disabled { cursor: default; opacity: .62; }@media (max-width: 1100px) { .settings-dialog { width: calc(100vw - 40px); height: calc(100vh - 40px); }.dialog-backdrop { padding: 20px; }.recycle-path { align-items: flex-start; flex-direction: column; }.recycle-path > span { flex-basis: auto; }.recycle-path > div { width: 100%; } }
 /* Appearance controls use the same semantic surfaces as the application. */
 .setting-row input[type="checkbox"] { background: var(--border-2); }
 .setting-row input[type="checkbox"]::after { background: var(--surface); }
