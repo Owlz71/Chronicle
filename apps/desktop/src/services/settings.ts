@@ -23,6 +23,10 @@ export interface AppSettings {
   createInitialSnapshot: boolean;
   defaultStoragePolicy: StoragePolicy;
   defaultAutomaticUpload: boolean;
+  lastArchiveCategoryId: string;
+  autoSyncEnabled: boolean;
+  autoSyncIntervalDays: number;
+  autoSyncLastAt: number;
   autoBackupDelaySeconds: number;
   backupHealthStaleDays: number;
   retentionCount: number | null;
@@ -99,6 +103,10 @@ const defaultAppSettings: AppSettings = {
   createInitialSnapshot: true,
   defaultStoragePolicy: "local",
   defaultAutomaticUpload: false,
+  lastArchiveCategoryId: "",
+  autoSyncEnabled: false,
+  autoSyncIntervalDays: 30,
+  autoSyncLastAt: 0,
   autoBackupDelaySeconds: 5,
   backupHealthStaleDays: 7,
   retentionCount: null,
@@ -140,6 +148,10 @@ export function normalizeAppSettings(value: LegacyAppSettings = {}): AppSettings
     updateChannel: requestedUpdateChannel,
     defaultStoragePolicy: value.defaultStoragePolicy === "local_and_remote" ? "local_and_remote" : "local",
     defaultAutomaticUpload: value.defaultAutomaticUpload === true,
+    lastArchiveCategoryId: typeof value.lastArchiveCategoryId === "string" ? value.lastArchiveCategoryId : "",
+    autoSyncEnabled: value.autoSyncEnabled === true,
+    autoSyncIntervalDays: Number.isFinite(value.autoSyncIntervalDays) && Number(value.autoSyncIntervalDays) >= 1 ? Math.min(365, Math.floor(Number(value.autoSyncIntervalDays))) : 30,
+    autoSyncLastAt: Number.isFinite(value.autoSyncLastAt) && Number(value.autoSyncLastAt) > 0 ? Math.floor(Number(value.autoSyncLastAt)) : 0,
     backupHealthStaleDays: Number.isFinite(value.backupHealthStaleDays) && Number(value.backupHealthStaleDays) >= 1 ? Math.min(365, Math.floor(Number(value.backupHealthStaleDays))) : 7,
     autoBackupDelaySeconds: Math.max(1, Math.min(300, Number.isFinite(delay) && delay >= 1 ? delay : 5)),
   };

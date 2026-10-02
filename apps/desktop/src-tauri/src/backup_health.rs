@@ -1,10 +1,10 @@
 use chronicle_storage::health::{
-    ContentComparison, HealthCode, HealthEntryResult, PendingObservation, inspect_entry,
-    update_observation,
+    ContentComparison, HealthCode, HealthEntryResult, PendingChange, PendingObservation,
+    inspect_entry, inspect_pending_change, update_observation,
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::Path,
     sync::{
@@ -165,6 +165,30 @@ pub fn load_backup_health_report(
         Err(e) => Err(e.to_string()),
     }
 }
+/// Answers "did these entries change since their newest snapshot?" for a sync that is
+/// about to run. Stored snapshots are not hashed and neither the task state nor the
+/// stored report is touched, so a partial run can never pollute a real health check.
+#[tauri::command(async)]
+pub fn check_pending_changes(
+    state: State<'_, crate::AppState>,
+    entry_ids: Vec<String>,
+) -> Result<Vec<PendingChange>, String> {
+    if !cfg!(windows) {
+        return Err("windows_only".into());
+    }
+    let repository = state.repository.clone();
+    let repository = repository.lock().map_err(|e| e.to_string())?;
+    let wanted: BTreeSet<&str> = entry_ids.iter().map(String::as_str).collect();
+    let flag = AtomicBool::new(false);
+    Ok(repository
+        .health_inputs()
+        .map_err(|e| e.to_string())?
+        .iter()
+        .filter(|input| wanted.contains(input.entry.id.as_str()))
+        .map(|input| inspect_pending_change(input, &flag))
+        .collect())
+}
+
 #[tauri::command]
 pub fn start_backup_health_check(
     app: tauri::AppHandle,

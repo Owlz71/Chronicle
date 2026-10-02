@@ -71,6 +71,20 @@ export const cancelHealthCheck = (taskId: string) =>
   invoke<void>("cancel_backup_health_check", { taskId });
 export const getHealthState = () =>
   invoke<HealthTaskState>("get_backup_health_state");
+/**
+ * Answers "did these entries change since their newest snapshot?" for a sync about to
+ * run. Stored snapshots are not hashed, so this stays cheap enough to call on launch.
+ */
+export interface PendingChange {
+  entryId: string;
+  name: string;
+  changed: boolean;
+  lastSnapshotAt: number | null;
+  totalBytes: number;
+  unreadableSources: number;
+}
+export const checkPendingChanges = (entryIds: string[]) =>
+  invoke<PendingChange[]>("check_pending_changes", { entryIds });
 export const loadHealthReport = () =>
   invoke<HealthReport | null>("load_backup_health_report");
 export const subscribeHealthProgress = (

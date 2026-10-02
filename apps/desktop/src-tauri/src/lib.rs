@@ -169,6 +169,7 @@ pub fn run() {
             backup_health::start_backup_health_check,
             backup_health::cancel_backup_health_check,
             backup_health::get_backup_health_state,
+            backup_health::check_pending_changes,
             backup_health::load_backup_health_report,
             commands::restore_snapshot,
             update::fetch_release_feed,

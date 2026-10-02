@@ -142,3 +142,65 @@ fn health_exclusions_unbound_missing_and_cancellation_are_not_false_success() {
         ContentComparison::Unknown
     );
 }
+
+#[test]
+fn pending_change_compares_sources_without_hashing_stored_snapshots() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("save.dat");
+    fs::write(&source, "one").unwrap();
+    let repo = LocalRepository::open(temp.path().join("repo")).unwrap();
+    let entry = repo
+        .add_entry_sources(
+            "test",
+            &[source.to_string_lossy().into_owned()],
+            None,
+            StoragePolicy::Local,
+        )
+        .unwrap();
+    let snapshot = repo
+        .create_snapshot(&entry.id, "first", "test", false)
+        .unwrap();
+    let input = repo.health_inputs().unwrap().remove(0);
+    let cancel = AtomicBool::new(false);
+
+    let unchanged = inspect_pending_change(&input, &cancel);
+    assert!(!unchanged.changed);
+    assert_eq!(unchanged.last_snapshot_at, Some(snapshot.created_at_ms));
+    assert_eq!(unchanged.total_bytes, snapshot.size_bytes);
+    assert_eq!(unchanged.unreadable_sources, 0);
+
+    fs::write(&source, "two").unwrap();
+    assert!(inspect_pending_change(&input, &cancel).changed);
+
+    // The stored snapshot is never hashed here, so corrupting it cannot fake a change.
+    fs::write(&input.snapshots[0].path, "corrupt").unwrap();
+    assert!(inspect_pending_change(&input, &cancel).changed);
+
+    fs::remove_file(&source).unwrap();
+    let unreadable = inspect_pending_change(&input, &cancel);
+    assert!(!unreadable.changed);
+    assert_eq!(unreadable.unreadable_sources, 1);
+}
+
+#[test]
+fn pending_change_reports_nothing_without_a_baseline_snapshot() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("save.dat");
+    fs::write(&source, "one").unwrap();
+    let repo = LocalRepository::open(temp.path().join("repo")).unwrap();
+    repo.add_entry_sources(
+        "test",
+        &[source.to_string_lossy().into_owned()],
+        None,
+        StoragePolicy::Local,
+    )
+    .unwrap();
+    let input = repo.health_inputs().unwrap().remove(0);
+    assert!(input.snapshots.is_empty());
+
+    let result = inspect_pending_change(&input, &AtomicBool::new(false));
+    assert!(!result.changed);
+    assert_eq!(result.last_snapshot_at, None);
+    assert_eq!(result.total_bytes, 0);
+    assert_eq!(result.unreadable_sources, 0);
+}

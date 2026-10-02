@@ -481,3 +481,75 @@ pub fn inspect_entry(input: &HealthEntryInput, flag: &AtomicBool) -> HealthEntry
     }
     result
 }
+
+/// The pre-sync answer to "did the live sources change since the newest snapshot?".
+///
+/// Unlike [`inspect_entry`] this never hashes the stored snapshots, so the cost stays
+/// proportional to the live sources. It answers one question before an automatic
+/// sync and is deliberately not a substitute for an integrity check.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingChange {
+    pub entry_id: String,
+    pub name: String,
+    pub changed: bool,
+    pub last_snapshot_at: Option<u64>,
+    pub total_bytes: u64,
+    pub unreadable_sources: u32,
+}
+
+/// Compares the live sources of one entry against its newest snapshot.
+///
+/// `changed` stays `false` whenever the answer would not be trustworthy: no snapshot
+/// exists, a source cannot be read, or the task was cancelled.
+pub fn inspect_pending_change(input: &HealthEntryInput, flag: &AtomicBool) -> PendingChange {
+    let mut change = PendingChange {
+        entry_id: input.entry.id.clone(),
+        name: input.entry.name.clone(),
+        changed: false,
+        last_snapshot_at: None,
+        total_bytes: 0,
+        unreadable_sources: 0,
+    };
+    let Some(latest) = input.snapshots.first() else {
+        // Without a snapshot there is no baseline, so nothing has "changed" yet.
+        return change;
+    };
+    change.last_snapshot_at = Some(latest.snapshot.created_at_ms);
+    change.total_bytes = latest.snapshot.size_bytes;
+    let Ok(rules) = ExclusionRules::new(&input.entry.exclude_patterns) else {
+        change.unreadable_sources = u32::try_from(input.entry.sources.len()).unwrap_or(u32::MAX);
+        return change;
+    };
+    let file_sources: Vec<_> = input
+        .entry
+        .sources
+        .iter()
+        .filter(|source| source.kind != EntryKind::Registry)
+        .collect();
+    let mut manifest = BTreeMap::new();
+    for source in &file_sources {
+        match source_manifest(source, &rules, flag) {
+            Ok(files) => manifest.extend(files),
+            Err(_) => change.unreadable_sources += 1,
+        }
+    }
+    if change.unreadable_sources > 0 || file_sources.is_empty() || flag.load(Ordering::Relaxed) {
+        return change;
+    }
+    let previous: BTreeMap<String, String> = latest
+        .snapshot
+        .files
+        .iter()
+        .filter(|file| {
+            file_sources.iter().any(|source| {
+                file.relative_path
+                    .strip_prefix(&format!("{}/", source.id))
+                    .is_some_and(|path| !rules.is_excluded(Path::new(path), false))
+            })
+        })
+        .map(|file| (file.relative_path.clone(), file.content_hash.clone()))
+        .collect();
+    change.changed = manifest != previous;
+    change
+}

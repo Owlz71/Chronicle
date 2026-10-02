@@ -3,7 +3,7 @@ import { t, locale, type Locale } from "./services/i18n";
 import {
   AlertTriangle, Check, ChevronDown, ChevronLeft, ChevronRight, Clock3, CloudCog, File, Gamepad2, Info,
   Folder, FolderArchive, FolderOpen, HardDrive, LockKeyhole, MoreHorizontal, Moon, Pencil, Plus, RotateCcw, Save,
-  RefreshCw, Search, Settings2, SlidersHorizontal, UploadCloud, X,
+  RefreshCw, Search, Settings2, SlidersHorizontal, Timer, UploadCloud, X,
   Star, Sun, Trash2,
 } from "@lucide/vue";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, toRaw, watch } from "vue";
@@ -25,6 +25,10 @@ import BackupHealthDialog from "./components/BackupHealthDialog.vue";
 import { setBackupTrigger, getBackupRuntimeStates, subscribeBackupRuntime, acceptBackupRuntime, backupAutomationLabel, backupAutomationSupported, type BackupRuntimeStatus, type BackupTriggerConfig } from "./services/backupAutomation";
 import SteamScanDialog from "./components/SteamScanDialog.vue";
 import SaveSearchDialog from "./components/SaveSearchDialog.vue";
+import AutoSyncDialog from "./components/AutoSyncDialog.vue";
+import PendingBackupDialog from "./components/PendingBackupDialog.vue";
+import { checkPendingChanges, type PendingChange } from "./services/backupHealth";
+import { formatBytes, formatTime } from "./services/formatting";
 import UpdateDialog from "./components/UpdateDialog.vue";
 import TutorialOverlay from "./components/TutorialOverlay.vue";
 import { advanceTutorial, createTutorialState, loadTutorialProgress, saveTutorialProgress, shouldOfferTutorial, tutorialViews, type TutorialEvent, type TutorialProgress, type TutorialState } from "./services/onboarding";
@@ -150,6 +154,20 @@ const saveSearchHits = ref<SaveSearchHit[]>([]);
 const saveSearchBusy = ref(false);
 const saveSearchError = ref("");
 const presetBackupTrigger = ref<BackupTriggerConfig>();
+const autoSyncOpen = ref(false);
+const autoSyncRunning = ref(false);
+const pendingBackupRequest = ref<PendingChange[]>();
+let pendingBackupResolver: ((entryIds: string[] | null) => void) | undefined;
+const autoSyncNextAt = computed(() => appSettings.autoSyncLastAt
+  ? appSettings.autoSyncLastAt + appSettings.autoSyncIntervalDays * 86_400_000
+  : undefined);
+const autoSyncTitle = computed(() => {
+  if (!appSettings.autoSyncEnabled) return t("自动同步间隔");
+  const next = autoSyncNextAt.value;
+  return next
+    ? t("自动同步：每 {days} 天，下次 {time}", { days: appSettings.autoSyncIntervalDays, time: formatTime(next) })
+    : t("自动同步：每 {days} 天", { days: appSettings.autoSyncIntervalDays });
+});
 const updateChecking = ref(false);
 const availableUpdate = ref<ReleaseUpdate>();
 const tutorial = ref<TutorialState>({ step: "inactive", route: "local" });
@@ -250,6 +268,7 @@ function refreshCurrentTime(): void {
   currentTime.value = formatCurrentTime(now);
   window.clearTimeout(clockTimer);
   clockTimer = window.setTimeout(refreshCurrentTime, millisecondsUntilNextMinute(now));
+  maybeRunAutoSync();
 }
 
 async function hideMainWindowToTray(): Promise<void> {
@@ -370,23 +389,6 @@ function reportSourceFailures(outcomes: SourceSyncOutcome<unknown>[], archive: A
   for (const outcome of outcomes) {
     if (outcome.status === "rejected") reportError(outcome.reason, { operation, archiveId: archive.id, sourceId: outcome.source.id });
   }
-}
-
-function formatBytes(bytes: number): string {
-  if (!bytes) return "—";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  const unit = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  return `${(bytes / 1024 ** unit).toFixed(unit > 1 ? 1 : 0)} ${units[unit]}`;
-}
-
-function formatTime(timestamp?: number): string {
-  if (!timestamp) return t("尚未备份");
-  const date = new Date(timestamp);
-  const today = new Date();
-  if (date.toDateString() === today.toDateString()) {
-    return t("今天 {time}", { time: date.toLocaleTimeString(locale.value, { hour: "2-digit", minute: "2-digit", hour12: false }) });
-  }
-  return date.toLocaleString(locale.value, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
 function displaySourcePath(path: string): string {
@@ -566,6 +568,14 @@ async function persistArchiveDefaults(input: CreateArchiveInput): Promise<void> 
   }
 }
 
+/** Remembers the category for the next new archive; never blocks a successful creation. */
+function rememberArchiveCategory(categoryId?: string): void {
+  const next = categoryId ?? "";
+  if (appSettings.lastArchiveCategoryId === next) return;
+  void saveAppSettings({ ...appSettings, lastArchiveCategoryId: next })
+    .catch((error: unknown) => reportError(error, { operation: t("保存设置") }));
+}
+
 async function createArchive(input: CreateArchiveInput, options: { saveAsDefaults?: boolean } = {}) {
   if (["sources", "name", "storage", "automation"].includes(tutorial.value.step)) {
     showNotice(t("请先阅读当前提示，完成保存方式与自动化介绍后再创建。"), "info");
@@ -592,6 +602,7 @@ async function createArchive(input: CreateArchiveInput, options: { saveAsDefault
       ? (selectedCategoryId.value === "all" ? undefined : selectedCategoryId.value)
       : (input.categoryId || undefined);
     const archive = await archiveRepository.createArchive({ ...input, autoBackupEnabled: false, categoryId });
+    rememberArchiveCategory(categoryId);
     try { if (input.backupTrigger && input.autoBackupEnabled) await setBackupTrigger(archive.id, input.backupTrigger); }
     catch (error) {
       await refreshArchives(archive.id);
@@ -743,23 +754,35 @@ async function moveCategoryFromMenu(categoryId: string, value: string | null) {
   } catch (error) { showNotice(readableError(error), "error"); }
 }
 
-async function createSnapshot(title = t("手动备份")) {
-  if (!selectedArchive.value || busyAction.value) return;
+async function snapshotArchive(archive: ArchiveRecord, title: string, upload = true): Promise<boolean> {
+  if (busyAction.value) return false;
+  const focused = selectedArchive.value?.id === archive.id;
+  const previousSelection = selectedArchiveId.value;
   busyAction.value = "snapshot";
   try {
-    const snapshot = await archiveRepository.createSnapshot(toRaw(selectedArchive.value), title, false);
-    await refreshArchives(selectedArchive.value.id);
-    await refreshSnapshots(selectedArchive.value.id);
+    const snapshot = await archiveRepository.createSnapshot(toRaw(archive), title, false);
+    await refreshArchives(focused ? archive.id : previousSelection);
+    if (focused) {
+      await refreshSnapshots(archive.id);
+      selectedSnapshotId.value = snapshot.id;
+    }
     await refreshRepositoryInfo();
-    selectedSnapshotId.value = snapshot.id;
-    tutorialEvent({ type: "snapshot-created", archiveId: selectedArchive.value.id });
-    await uploadNewSnapshot(selectedArchive.value);
+    tutorialEvent({ type: "snapshot-created", archiveId: archive.id });
+    if (upload) await uploadNewSnapshot(archive);
     showNotice(t("时间节点已创建，保存 {length} 个文件", { length: snapshot.files.length }));
+    return true;
   } catch (error) {
-    reportError(error, { operation: t("创建备份"), archiveId: selectedArchive.value?.id });
+    reportError(error, { operation: t("创建备份"), archiveId: archive.id });
+    return false;
   } finally {
     busyAction.value = undefined;
   }
+}
+
+async function createSnapshot(title = t("手动备份")) {
+  const archive = selectedArchive.value;
+  if (!archive) return;
+  await snapshotArchive(archive, title);
 }
 
 async function uploadNewSnapshot(archive: ArchiveRecord): Promise<void> {
@@ -819,22 +842,22 @@ async function syncSelectedArchive() {
   }
 }
 
-async function syncAllArchives() {
-  if (syncingArchive.value || syncingAllArchives.value) return;
+async function syncAllArchives(): Promise<boolean> {
+  if (syncingArchive.value || syncingAllArchives.value) return false;
   if (!isTauriRuntime) {
     showNotice(t("云同步仅在 Chronicle 桌面端可用"), "error");
-    return;
+    return false;
   }
   const sources = enabledCloudSources(cloudSettings);
   if (!sources.length) {
     cloudSettingsOpen.value = true;
     showNotice(t("请先添加同步源，并点击开始同步"), "info");
-    return;
+    return false;
   }
   const remoteArchives = archives.value.filter((archive) => archive.storagePolicy === "local_and_remote");
   if (!remoteArchives.length) {
     showNotice(t("没有启用云端保存的存档"), "info");
-    return;
+    return false;
   }
   syncingAllArchives.value = true;
   syncProgressTarget.value = "all";
@@ -853,13 +876,110 @@ async function syncAllArchives() {
     await refreshArchives(selectedArchiveId.value);
     if (selectedArchive.value) await refreshSnapshots(selectedArchive.value.id);
     showNotice(t("已完成 {completed} / {value} 项存档同步{value3}", { completed: completed, value: remoteArchives.length * sources.length, value3: hasFailures ? t("，部分操作失败，请查看错误记录") : "" }), conflicts || hasFailures ? "info" : "success");
+    return completed > 0 && !hasFailures;
   } catch (error) {
     reportError(error, { operation: t("同步全部存档") });
+    return false;
   } finally {
     syncingAllArchives.value = false;
     syncProgress.value = undefined;
     syncProgressTarget.value = undefined;
   }
+}
+
+function requestPendingBackup(changes: PendingChange[]): Promise<string[] | null> {
+  pendingBackupRequest.value = changes;
+  return new Promise((resolve) => { pendingBackupResolver = resolve; });
+}
+
+function answerPendingBackup(entryIds: string[] | null): void {
+  pendingBackupRequest.value = undefined;
+  const resolve = pendingBackupResolver;
+  pendingBackupResolver = undefined;
+  resolve?.(entryIds);
+}
+
+/**
+ * Looks for archives whose files changed since a snapshot that is already older than
+ * the reminder threshold. Returns the entries to back up first, or `null` when the
+ * user declined - in which case the whole automatic sync is aborted.
+ */
+async function prepareAutoSync(): Promise<string[] | null> {
+  const staleBefore = Date.now() - appSettings.backupHealthStaleDays * 86_400_000;
+  const stale = archives.value.filter((archive) => archive.lastSnapshotAt !== undefined && archive.lastSnapshotAt < staleBefore);
+  if (!stale.length) return [];
+  let changes: PendingChange[];
+  try {
+    changes = await checkPendingChanges(stale.map((archive) => archive.id));
+  } catch (error) {
+    reportError(error, { operation: t("同步前检查") });
+    return [];
+  }
+  const pending = changes.filter((change) => change.changed);
+  if (!pending.length) return [];
+  return requestPendingBackup(pending);
+}
+
+/** Backs up whatever the user picked, then syncs every cloud archive. */
+async function runAutoSync(options: { manual?: boolean } = {}): Promise<void> {
+  if (autoSyncRunning.value || syncingAllArchives.value || syncingArchive.value) return;
+  if (!isTauriRuntime || !enabledCloudSources(cloudSettings).length) {
+    if (options.manual) showNotice(t("请先添加同步源，并点击开始同步"), "info");
+    return;
+  }
+  if (!options.manual) {
+    if (!appSettings.autoSyncEnabled) return;
+    const intervalMs = appSettings.autoSyncIntervalDays * 86_400_000;
+    if (appSettings.autoSyncLastAt && Date.now() - appSettings.autoSyncLastAt < intervalMs) return;
+  }
+  autoSyncRunning.value = true;
+  try {
+    const chosen = await prepareAutoSync();
+    if (!chosen) {
+      // Declining aborts the run instead of silently pushing unbacked changes to the cloud.
+      showNotice(t("已取消自动同步，未备份也未同步"), "info");
+      return;
+    }
+    for (const entryId of chosen) {
+      const archive = archives.value.find((item) => item.id === entryId);
+      // The sync below uploads every archive, so the per-snapshot upload is skipped here.
+      if (archive) await snapshotArchive(archive, t("自动同步前备份"), false);
+    }
+    const synced = await syncAllArchives();
+    if (!synced) return;
+    await saveAppSettings({ ...appSettings, autoSyncLastAt: Date.now() });
+    showNotice(t("自动同步已完成"));
+  } catch (error) {
+    reportError(error, { operation: t("自动同步") });
+  } finally {
+    autoSyncRunning.value = false;
+  }
+}
+
+/** Runs the interval check, but only while the user is not busy in another dialog. */
+function maybeRunAutoSync(): void {
+  if (!appSettings.autoSyncEnabled || autoSyncRunning.value) return;
+  if (externalDropBlocked.value || tutorialActive.value || loading.value) return;
+  void runAutoSync();
+}
+
+async function handleAutoSyncSave(payload: { enabled: boolean; intervalDays: number; syncNow: boolean }): Promise<void> {
+  autoSyncOpen.value = false;
+  const enabling = payload.enabled && !appSettings.autoSyncEnabled;
+  try {
+    await saveAppSettings({
+      ...appSettings,
+      autoSyncEnabled: payload.enabled,
+      autoSyncIntervalDays: payload.intervalDays,
+      // Turning it on starts the clock now, so the first automatic sync waits a full interval.
+      autoSyncLastAt: enabling ? Date.now() : appSettings.autoSyncLastAt,
+    });
+  } catch (error) {
+    showNotice(readableError(error), "error");
+    return;
+  }
+  if (payload.syncNow) void runAutoSync({ manual: true });
+  else showNotice(t("自动同步设置已保存"));
 }
 
 async function restoreSnapshot() {
@@ -1068,7 +1188,7 @@ const externalDropBlocked = computed(() => (
   || steamScanOpen.value || cloudHealthDialogOpen.value || backupHealthOpen.value || closeRequestOpen.value
   || activityPanelOpen.value || sortMenuOpen.value || archiveMenuOpen.value || Boolean(treeMenu.value)
   || Boolean(confirmRequest.value) || Boolean(registryRestoreRequest.value) || Boolean(availableUpdate.value)
-  || saveSearchOpen.value
+  || saveSearchOpen.value || autoSyncOpen.value || Boolean(pendingBackupRequest.value)
   || tutorialActive.value
 ));
 
@@ -1399,7 +1519,7 @@ onMounted(async () => {
     if (!tutorialActive.value && startupUpdatePending) { startupUpdatePending = false; void checkForApplicationUpdate(); }
   }
   catch (error) { showNotice(readableError(error), "error"); }
-  finally { loading.value = false; }
+  finally { loading.value = false; maybeRunAutoSync(); }
 });
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", handleShortcut);
@@ -1417,7 +1537,10 @@ onBeforeUnmount(() => {
     <header class="titlebar">
       <div class="brand"><time :datetime="currentTime">{{ currentTime }}</time></div>
       <div class="sync-states"><button class="sync-state sync-state-button" :title="t('打开本地资料库')" @click="openRepositoryFolder"><i></i>{{ t("本地资料库可用") }}</button><button class="sync-state sync-state-button" :class="cloudStateClass" :title="cloudHealth.reason || t('检测云端资料库')" @click="openCloudHealthDialog"><i :class="{ pulse: cloudHealth.status === 'checking' }"></i>{{ cloudLibrary.label }}</button><button class="sync-state sync-state-button sync-progress-button" :style="{ '--sync-progress': allSyncProgressFraction }" :disabled="syncingArchive || syncingAllArchives" :title="t('同步所有启用云端保存的存档')" @click="syncAllArchives"><span><UploadCloud :size="16" />{{ syncingAllArchives ? t("正在同步 {syncProgressText}", { syncProgressText: syncProgressText }) : t("同步所有存档") }}</span></button></div>
-      <div class="toolbar"><button class="toolbar-action" data-tour="steam-entry" :aria-label="t('游戏存档识别')" :title="t('游戏存档识别')" @click="steamScanOpen = true"><Gamepad2 :size="19" /></button><button class="toolbar-action" data-tour="cloud-entry" :aria-label="t('云端设置')" :title="t('云端设置')" @click="cloudSettingsOpen = true"><CloudCog :size="17" /></button><button class="toolbar-action" :aria-label="t('应用设置')" :title="t('应用设置')" @click="settingsOpen = true"><Settings2 :size="17" /></button></div>
+      <div class="toolbar-set">
+        <div class="toolbar"><button class="toolbar-action auto-sync-action" :class="{ enabled: appSettings.autoSyncEnabled }" :aria-label="t('自动同步间隔')" :title="autoSyncTitle" @click="autoSyncOpen = true"><Timer :size="18" /><i v-if="appSettings.autoSyncEnabled" aria-hidden="true" /></button></div>
+        <div class="toolbar"><button class="toolbar-action" data-tour="steam-entry" :aria-label="t('游戏存档识别')" :title="t('游戏存档识别')" @click="steamScanOpen = true"><Gamepad2 :size="19" /></button><button class="toolbar-action" data-tour="cloud-entry" :aria-label="t('云端设置')" :title="t('云端设置')" @click="cloudSettingsOpen = true"><CloudCog :size="17" /></button><button class="toolbar-action" :aria-label="t('应用设置')" :title="t('应用设置')" @click="settingsOpen = true"><Settings2 :size="17" /></button></div>
+      </div>
     </header>
 
     <aside class="sidebar">
@@ -1503,6 +1626,8 @@ onBeforeUnmount(() => {
     </main>
 
     <AppToast v-if="notice" :message="notice.message" :type="notice.type" @close="notice = undefined" />
+    <AutoSyncDialog v-if="autoSyncOpen" :enabled="appSettings.autoSyncEnabled" :interval-days="appSettings.autoSyncIntervalDays" :last-sync-at="appSettings.autoSyncLastAt" :cloud-ready="enabledCloudSources(cloudSettings).length > 0" :syncing="syncingAllArchives || Boolean(syncingArchive)" @close="autoSyncOpen = false" @save="handleAutoSyncSave" />
+    <PendingBackupDialog v-if="pendingBackupRequest" :changes="pendingBackupRequest" :stale-days="appSettings.backupHealthStaleDays" :busy="autoSyncRunning" @cancel="answerPendingBackup(null)" @confirm="answerPendingBackup" />
     <SettingsDialog v-if="settingsOpen" @backup-health="backupHealthOpen = true" @restart-tutorial="restartTutorial" :update-checking="updateChecking" @close="settingsOpen = false" @saved="handleSettingsChanged" @check-update="checkForApplicationUpdate(true, $event)" />
     <BackupHealthDialog v-if="backupHealthOpen" @close="backupHealthOpen = false" @open-archive="handleHealthAction($event, 'open')" @edit-sources="handleHealthAction($event, 'edit')" @backup-now="handleHealthAction($event, 'backup')" />
     <SteamScanDialog v-if="steamScanOpen" @close="steamScanOpen = false" @saved="handleSettingsChanged" />
@@ -1531,7 +1656,7 @@ onBeforeUnmount(() => {
       :default-name="droppedDefaultName"
       :preset-backup-trigger="presetBackupTrigger"
       :categories="categoryRecords"
-      :default-category-id="selectedCategoryId === 'all' ? '' : selectedCategoryId"
+      :default-category-id="appSettings.lastArchiveCategoryId"
       :picking="pickingSource"
       :submitting="creatingArchive"
       :error="createArchiveError"

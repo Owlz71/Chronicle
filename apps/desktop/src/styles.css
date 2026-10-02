@@ -123,10 +123,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
 .sync-state.failed { color: #ffb3aa; }
 .sync-state.failed i { background: #ef5b53; }
 .sync-state i.pulse { animation: pulse 1s ease-in-out infinite; }
-.toolbar { display: flex; align-items: center; gap: 2px; height: 38px; margin-right: 10px; padding: 2px; border: 1px solid color-mix(in srgb, var(--titlebar-text) 14%, transparent); border-radius: 9px; background: color-mix(in srgb, var(--titlebar-text) 7%, transparent); }
+.toolbar-set { display: flex; align-items: center; gap: 10px; margin-right: 10px; }
+.toolbar { display: flex; align-items: center; gap: 2px; height: 38px; padding: 2px; border: 1px solid color-mix(in srgb, var(--titlebar-text) 14%, transparent); border-radius: 9px; background: color-mix(in srgb, var(--titlebar-text) 7%, transparent); }
 .toolbar-action, .icon-button { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; background: transparent; border-radius: 6px; }
 .toolbar-action { color: var(--titlebar-text); }
 .toolbar-action:hover { color: var(--on-primary); background: color-mix(in srgb, var(--titlebar-text) 16%, transparent); }
+.auto-sync-action { position: relative; }
+.auto-sync-action i { position: absolute; right: 4px; bottom: 4px; width: 6px; height: 6px; background: color-mix(in srgb, var(--success) 45%, #ffffff); border-radius: 50%; }
 .floating-theme-toggle { position: fixed; right: 20px; bottom: 20px; z-index: 25; display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border: 1px solid var(--border-2); border-radius: 50%; color: var(--primary-dark); background: var(--surface); box-shadow: 0 4px 16px var(--shadow-color); }
 .floating-theme-toggle:hover { background: var(--primary-soft); }
 .floating-theme-toggle.is-dark { color: #ffffff; }
