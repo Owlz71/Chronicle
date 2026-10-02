@@ -121,7 +121,8 @@ onMounted(() => closeButton.value?.focus());
   background: var(--surface);
   border: 1px solid var(--border-2);
   border-radius: 12px;
-  box-shadow: 0 24px 80px #0d24205c;
+  box-shadow: 0 24px 80px var(--shadow-color);
+  color: var(--text);
 }
 header {
   display: grid;
@@ -137,7 +138,7 @@ header > span {
   width: 38px;
   height: 38px;
   color: var(--primary);
-  background: var(--primary-soft, #e8f2ee);
+  background: var(--primary-soft);
   border-radius: 9px;
 }
 header p,
@@ -152,6 +153,7 @@ header p {
 header h2 {
   margin-top: 3px;
   overflow: hidden;
+  color: var(--text);
   font-size: 17px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -161,10 +163,12 @@ header button {
   place-items: center;
   width: 38px;
   height: 38px;
+  color: var(--text-2);
   background: transparent;
   border-radius: 7px;
 }
 header button:hover {
+  color: var(--text);
   background: var(--hover);
 }
 .state,
@@ -200,17 +204,19 @@ header button:hover {
   gap: 3px;
   width: 100%;
   padding: 10px 12px;
+  color: var(--text);
   text-align: left;
-  background: var(--surface-2, #f7f9f8);
+  background: var(--subtle);
   border: 1px solid var(--border);
   border-radius: 9px;
 }
 .hit:hover {
   background: var(--hover);
+  border-color: var(--border-2);
 }
 .hit.exact {
-  background: #eaf7f0;
-  border-color: color-mix(in srgb, var(--primary) 55%, var(--border));
+  background: var(--primary-soft);
+  border-color: color-mix(in srgb, var(--primary) 45%, var(--border));
   box-shadow: inset 3px 0 0 var(--primary);
 }
 .hit-name {
@@ -228,7 +234,7 @@ header button:hover {
   font-size: 9px;
   font-style: normal;
   font-weight: 700;
-  color: #fff;
+  color: var(--on-primary);
   background: var(--primary);
   border-radius: 999px;
 }
@@ -243,7 +249,7 @@ footer {
   display: flex;
   justify-content: flex-end;
   padding: 13px 18px;
-  background: var(--surface);
+  background: var(--subtle);
   border-top: 1px solid var(--border);
 }
 footer button {
