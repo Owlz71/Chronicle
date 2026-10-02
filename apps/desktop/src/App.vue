@@ -29,6 +29,7 @@ import TutorialOverlay from "./components/TutorialOverlay.vue";
 import { advanceTutorial, createTutorialState, loadTutorialProgress, saveTutorialProgress, shouldOfferTutorial, tutorialViews, type TutorialEvent, type TutorialProgress, type TutorialState } from "./services/onboarding";
 import ThemedSelect, { type ThemedSelectOption } from "./components/ThemedSelect.vue";
 import type { ArchiveRecord, ArchiveSource, CategoryRecord, CreateArchiveInput, DroppedPath, RepositoryInfo, SnapshotRecord, SourceKind } from "./domain";
+import { autoScrollDelta, dropTargetAt, exceedsDragThreshold } from "./services/pointerDrag";
 import { archiveRepository, isTauriRuntime } from "./services/repository";
 import { cloudRepository, syncArchivesAcrossSources, type CloudSyncResult } from "./services/cloud";
 import { runCloudHealthCheck, type CloudHealthCheckItem } from "./services/cloudHealthCheck";
@@ -88,9 +89,14 @@ const creatingArchive = ref(false);
 const createArchiveError = ref<string>();
 const sortMenuOpen = ref(false);
 const sortMode = ref<ArchiveSortMode>("newest");
-const draggedArchiveId = ref<string>();
-const draggedCategoryId = ref<string>();
+type DragPayload = { kind: "archive"; id: string; label: string } | { kind: "category"; id: string; label: string };
+const pendingDrag = ref<{ payload: DragPayload; startX: number; startY: number }>();
+const dragging = ref<DragPayload>();
+const dragGhost = ref<{ x: number; y: number }>();
 const categoryDropTarget = ref<string>();
+let suppressClickUntil = 0;
+let autoScrollTimer: number | undefined;
+let autoScrollContainer: HTMLElement | undefined;
 const expandedCategoryIds = ref(new Set<string>());
 const activeTreeNodeId = ref("category:all");
 const categoryDialogOpen = ref(false);
@@ -1000,11 +1006,7 @@ async function createCategory(name: string) {
   }
 }
 
-async function moveArchiveToCategory(categoryId?: string) {
-  const archiveId = draggedArchiveId.value;
-  draggedArchiveId.value = undefined;
-  categoryDropTarget.value = undefined;
-  if (!archiveId) return;
+async function moveArchiveToCategory(archiveId: string, categoryId?: string) {
   try {
     await archiveRepository.setArchiveCategory(archiveId, categoryId);
     if (categoryId) expandedCategoryIds.value = new Set([...expandedCategoryIds.value, categoryId]);
@@ -1100,86 +1102,161 @@ async function handleExternalDrop(paths: string[]): Promise<void> {
   }
 }
 
-function startArchiveDrag(archiveId: string, event: DragEvent) {
-  draggedCategoryId.value = undefined;
-  draggedArchiveId.value = archiveId;
-  if (event.dataTransfer) {
-    event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData("text/plain", `archive:${archiveId}`);
-    event.dataTransfer.setData("application/x-chronicle-archive", archiveId);
-  }
+function beginPointerDrag(payload: DragPayload, event: PointerEvent): void {
+  if (event.button !== 0) return;
+  const target = event.target as HTMLElement | null;
+  // Only the row body and the primary select control start a drag; menus,
+  // disclosure arrows and badges keep their own click behaviour.
+  const control = target?.closest("button, input, textarea, select, a");
+  if (control && !control.classList.contains("category-select") && !control.classList.contains("archive-tree-select")) return;
+  pendingDrag.value = { payload, startX: event.clientX, startY: event.clientY };
+  window.addEventListener("pointermove", handleDragPointerMove);
+  window.addEventListener("pointerup", handleDragPointerUp);
+  window.addEventListener("pointercancel", cancelPointerDrag);
 }
 
-function startCategoryDrag(categoryId: string, event: DragEvent) {
-  draggedArchiveId.value = undefined;
-  draggedCategoryId.value = categoryId;
-  if (event.dataTransfer) {
-    event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData("text/plain", `category:${categoryId}`);
-    event.dataTransfer.setData("application/x-chronicle-category", categoryId);
+function handleDragPointerMove(event: PointerEvent): void {
+  const pending = pendingDrag.value;
+  if (pending && !dragging.value) {
+    if (!exceedsDragThreshold({ x: pending.startX, y: pending.startY }, { x: event.clientX, y: event.clientY })) return;
+    dragging.value = pending.payload;
+    // Text selected before the threshold was reached must not stay highlighted.
+    document.body.classList.add("chronicle-dragging");
+    window.getSelection()?.removeAllRanges();
+    beginAutoScroll();
   }
+  if (!dragging.value) return;
+  event.preventDefault();
+  dragGhost.value = { x: event.clientX, y: event.clientY };
+  updateDropHighlight(event.clientX, event.clientY);
+  updateAutoScrollContainer(event.clientX, event.clientY);
 }
 
-function finishDrag() {
-  draggedArchiveId.value = undefined;
-  draggedCategoryId.value = undefined;
+async function handleDragPointerUp(event: PointerEvent): Promise<void> {
+  const payload = dragging.value;
+  const categoryId = categoryDropTarget.value;
+  const overTrash = trashDropActive.value;
+  cancelPointerDrag();
+  if (!payload) return;
+  // A completed drag must not also select whatever sits under the pointer.
+  suppressClickUntil = Date.now() + 400;
+  if (overTrash) {
+    await dropInTrash(payload);
+    return;
+  }
+  if (categoryId) await dropOnCategory(payload, categoryId);
+}
+
+function cancelPointerDrag(): void {
+  stopAutoScroll();
+  document.body.classList.remove("chronicle-dragging");
+  window.removeEventListener("pointermove", handleDragPointerMove);
+  window.removeEventListener("pointerup", handleDragPointerUp);
+  window.removeEventListener("pointercancel", cancelPointerDrag);
+  pendingDrag.value = undefined;
+  dragging.value = undefined;
+  dragGhost.value = undefined;
   categoryDropTarget.value = undefined;
   trashDropActive.value = false;
 }
 
-function handleTrashDragOver(event: DragEvent) {
-  if (!draggedArchiveId.value && !draggedCategoryId.value) return;
-  event.preventDefault();
-  trashDropActive.value = true;
-  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
-}
-
-async function dropInTrash() {
-  const archive = archives.value.find((item) => item.id === draggedArchiveId.value);
-  const categoryId = draggedCategoryId.value;
-  finishDrag();
-  if (archive) await deleteArchive(archive);
-  else if (categoryId) await deleteCategory(categoryId);
-}
-
-function canDropOnCategory(categoryId: string): boolean {
-  if (categoryId === "all") {
-    if (draggedCategoryId.value) return Boolean(categoryRecords.value.find((category) => category.id === draggedCategoryId.value)?.parentId);
-    return Boolean(archives.value.find((archive) => archive.id === draggedArchiveId.value)?.categoryId);
-  }
-  if (!draggedCategoryId.value) return Boolean(draggedArchiveId.value);
-  return categoryId !== draggedCategoryId.value && !descendantIds(draggedCategoryId.value).has(categoryId);
-}
-
-function handleCategoryDragOver(categoryId: string, event: DragEvent) {
-  if (!canDropOnCategory(categoryId)) return;
-  event.preventDefault();
-  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
-  categoryDropTarget.value = categoryId;
-}
-
-async function dropOnCategory(categoryId: string) {
-  if (!canDropOnCategory(categoryId)) return;
-  const parentId = categoryId === "all" ? undefined : categoryId;
-  if (draggedCategoryId.value) {
-    const categoryIdToMove = draggedCategoryId.value;
-    const movedName = categoryRecords.value.find((category) => category.id === categoryIdToMove)?.name ?? t("分类");
-    try {
-      await archiveRepository.moveCategory(categoryIdToMove, parentId);
-      if (parentId) expandedCategoryIds.value = new Set([...expandedCategoryIds.value, parentId]);
-      await refreshCategories();
-      showNotice(parentId ? t("“{movedName}”已移入目标分类", { movedName: movedName }) : t("“{movedName}”已移至根目录", { movedName: movedName }));
-    } catch (error) {
-      showNotice(readableError(error), "error");
-    } finally {
-      finishDrag();
-    }
+function updateDropHighlight(x: number, y: number): void {
+  const overTrash = Boolean(dropTargetAt(x, y, "data-drop-trash"));
+  trashDropActive.value = overTrash;
+  if (overTrash) {
+    categoryDropTarget.value = undefined;
     return;
   }
-  await moveArchiveToCategory(parentId);
+  const categoryId = dropTargetAt(x, y, "data-drop-category");
+  categoryDropTarget.value = categoryId && canDropOnCategory(categoryId) ? categoryId : undefined;
+}
+
+function updateAutoScrollContainer(x: number, y: number): void {
+  const element = document.elementFromPoint(x, y) as HTMLElement | null;
+  autoScrollContainer = (element?.closest("nav, .archive-list") as HTMLElement | null) ?? undefined;
+}
+
+function beginAutoScroll(): void {
+  if (autoScrollTimer !== undefined) return;
+  autoScrollTimer = window.setInterval(() => {
+    const container = autoScrollContainer;
+    const ghost = dragGhost.value;
+    if (!container || !ghost) return;
+    const delta = autoScrollDelta(container.getBoundingClientRect(), ghost.y);
+    if (delta) container.scrollTop += delta;
+  }, 50);
+}
+
+function stopAutoScroll(): void {
+  if (autoScrollTimer !== undefined) {
+    window.clearInterval(autoScrollTimer);
+    autoScrollTimer = undefined;
+  }
+  autoScrollContainer = undefined;
+}
+
+function clickSuppressed(): boolean {
+  return Date.now() < suppressClickUntil;
+}
+
+function handleArchiveRowClick(archiveId: string): void {
+  if (clickSuppressed()) return;
+  selectArchive(archiveId);
+}
+
+function handleArchiveTreeClick(archive: ArchiveRecord): void {
+  if (clickSuppressed()) return;
+  selectArchiveFromTree(archive);
+}
+
+function handleCategoryClick(categoryId: string): void {
+  if (clickSuppressed()) return;
+  selectCategory(categoryId);
+}
+
+async function dropInTrash(payload: DragPayload): Promise<void> {
+  if (payload.kind === "archive") {
+    const archive = archives.value.find((item) => item.id === payload.id);
+    if (archive) await deleteArchive(archive);
+    return;
+  }
+  await deleteCategory(payload.id);
+}
+
+function canDropOnCategory(categoryId: string, payload: DragPayload | undefined = dragging.value): boolean {
+  if (!payload) return false;
+  if (categoryId === "all") {
+    if (payload.kind === "category") return Boolean(categoryRecords.value.find((category) => category.id === payload.id)?.parentId);
+    return Boolean(archives.value.find((archive) => archive.id === payload.id)?.categoryId);
+  }
+  if (payload.kind === "archive") return true;
+  return categoryId !== payload.id && !descendantIds(payload.id).has(categoryId);
+}
+
+async function dropOnCategory(payload: DragPayload, categoryId: string): Promise<void> {
+  if (!canDropOnCategory(categoryId, payload)) return;
+  const parentId = categoryId === "all" ? undefined : categoryId;
+  if (payload.kind === "archive") {
+    await moveArchiveToCategory(payload.id, parentId);
+    return;
+  }
+  const movedName = categoryRecords.value.find((category) => category.id === payload.id)?.name ?? t("分类");
+  try {
+    await archiveRepository.moveCategory(payload.id, parentId);
+    if (parentId) expandedCategoryIds.value = new Set([...expandedCategoryIds.value, parentId]);
+    await refreshCategories();
+    showNotice(parentId ? t("“{movedName}”已移入目标分类", { movedName: movedName }) : t("“{movedName}”已移至根目录", { movedName: movedName }));
+  } catch (error) {
+    showNotice(readableError(error), "error");
+  }
 }
 
 function handleShortcut(event: KeyboardEvent) {
+  if (event.key === "Escape" && dragging.value) {
+    event.preventDefault();
+    cancelPointerDrag();
+    return;
+  }
   if (steamScanOpen.value) return;
   if (tutorialActive.value && !confirmRequest.value && !closeRequestOpen.value) return;
   if (event.key === "Escape") {
@@ -1267,6 +1344,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("keydown", handleShortcut);
   window.removeEventListener("dragover", blockExternalFileNavigation);
   window.removeEventListener("drop", blockExternalFileNavigation);
+  cancelPointerDrag();
   unlistenDragDrop?.();
   window.clearTimeout(noticeTimer);
   window.clearTimeout(clockTimer);
@@ -1291,25 +1369,23 @@ onBeforeUnmount(() => {
             class="category-tree-row"
             :class="{ active: activeTreeNodeId === `category:${node.id}`, 'drop-target': categoryDropTarget === node.id }"
             :style="{ paddingLeft: `${4 + node.depth * 16}px` }"
-            @dragend="finishDrag"
-            @dragover="handleCategoryDragOver(node.id, $event)"
-            @dragleave="categoryDropTarget === node.id && (categoryDropTarget = undefined)"
-            @drop.prevent="dropOnCategory(node.id)"
+            :data-drop-category="node.id"
+            @pointerdown="node.id !== 'all' && beginPointerDrag({ kind: 'category', id: node.id, label: node.name }, $event)"
           >
             <button v-if="node.id !== 'all'" class="disclosure" :class="{ hidden: !node.hasChildren }" :aria-label="t('{value} {name}', { value: expandedCategoryIds.has(node.id) ? t('折叠') : t('展开'), name: node.name })" :title="t('{value} {name}', { value: expandedCategoryIds.has(node.id) ? t('折叠') : t('展开'), name: node.name })" :aria-expanded="node.hasChildren ? expandedCategoryIds.has(node.id) : undefined" @click="toggleCategory(node.id)"><ChevronDown v-if="expandedCategoryIds.has(node.id)" :size="14" /><ChevronRight v-else :size="14" /></button>
             <span v-else class="disclosure-spacer"></span>
-            <button class="category-select" :draggable="node.id !== 'all'" :title="node.id === 'all' ? t('将分类或存档拖到这里可移至根目录') : undefined" @dragstart.stop="node.id !== 'all' && startCategoryDrag(node.id, $event)" @click="selectCategory(node.id)"><component :is="node.icon" :size="17" /><span>{{ node.name }}</span><span class="category-suffix"><LockKeyhole v-if="node.id === 'all'" :size="12" :aria-label="t('固定根目录')" /><small>{{ node.count }}</small></span></button>
+            <button class="category-select" :title="node.id === 'all' ? t('将分类或存档拖到这里可移至根目录') : undefined" @click="handleCategoryClick(node.id)"><component :is="node.icon" :size="17" /><span>{{ node.name }}</span><span class="category-suffix"><LockKeyhole v-if="node.id === 'all'" :size="12" :aria-label="t('固定根目录')" /><small>{{ node.count }}</small></span></button>
             <div v-if="node.id !== 'all'" class="tree-more"><button :aria-label="t('分类操作')" :title="t('分类操作')" :aria-expanded="treeMenu?.kind === 'category' && treeMenu.id === node.id" @click="toggleTreeMenu('category', node.id, $event)"><MoreHorizontal :size="14" /></button><Teleport to="body"><div v-if="treeMenu?.kind === 'category' && treeMenu.id === node.id" class="tree-menu" :style="treeMenuStyle"><label>{{ t("移动到") }}<ThemedSelect :model-value="node.parentId ?? null" :options="categoryMoveOptions(node.id)" :label="t('移动分类 {name}', { name: node.name })" @update:model-value="moveCategoryFromMenu(node.id, $event)" /></label><button class="danger" @click="deleteCategory(node.id)"><Trash2 :size="13" />{{ t("删除分类") }}</button></div></Teleport></div>
           </div>
-          <div v-else class="archive-tree-row" :class="{ active: activeTreeNodeId === `archive:${node.id}`, 'needs-location': archiveNeedsLocation(node.archive) }" :style="{ paddingLeft: `${4 + node.depth * 16}px` }" @dragend="finishDrag">
+          <div v-else class="archive-tree-row" :class="{ active: activeTreeNodeId === `archive:${node.id}`, 'needs-location': archiveNeedsLocation(node.archive) }" :style="{ paddingLeft: `${4 + node.depth * 16}px` }" @pointerdown="beginPointerDrag({ kind: 'archive', id: node.id, label: node.archive.name }, $event)">
             <span class="disclosure-spacer"></span>
-            <button class="archive-tree-select" draggable="true" :title="archiveNeedsLocation(node.archive) ? t('{name}：等待定位本机来源', { name: node.archive.name }) : node.archive.name" @dragstart.stop="startArchiveDrag(node.id, $event)" @click="selectArchiveFromTree(node.archive)"><AlertTriangle v-if="archiveNeedsLocation(node.archive)" :size="16" /><File v-else :size="16" /><span>{{ node.archive.name }}</span></button>
+            <button class="archive-tree-select" :title="archiveNeedsLocation(node.archive) ? t('{name}：等待定位本机来源', { name: node.archive.name }) : node.archive.name" @click="handleArchiveTreeClick(node.archive)"><AlertTriangle v-if="archiveNeedsLocation(node.archive)" :size="16" /><File v-else :size="16" /><span>{{ node.archive.name }}</span></button>
             <div class="tree-more"><button :aria-label="t('存档移动操作')" :title="t('存档移动操作')" :aria-expanded="treeMenu?.kind === 'archive' && treeMenu.id === node.id" @click="toggleTreeMenu('archive', node.id, $event)"><MoreHorizontal :size="14" /></button><Teleport to="body"><div v-if="treeMenu?.kind === 'archive' && treeMenu.id === node.id" class="tree-menu" :style="treeMenuStyle"><label>{{ t("移动到") }}<ThemedSelect :model-value="node.archive.categoryId ?? null" :options="archiveMoveOptions()" :label="t('移动存档 {name}', { name: node.archive.name })" @update:model-value="moveArchiveFromMenu(node.id, $event)" /></label><button class="danger" @click="deleteArchive(node.archive)"><Trash2 :size="13" />{{ t("删除存档") }}</button></div></Teleport></div>
           </div>
         </template>
       </nav>
       <div class="spacer"></div>
-      <div v-if="draggedArchiveId || draggedCategoryId" class="trash-drop-zone" :class="{ active: trashDropActive }" @dragover="handleTrashDragOver" @dragleave="trashDropActive = false" @drop.prevent="dropInTrash"><Trash2 :size="19" /><span><b>{{ appSettings.recycleBinEnabled ? t("移入回收站") : t("永久删除") }}</b><small>{{ t("拖到这里后松开") }}</small></span></div>
+      <div v-if="dragging" class="trash-drop-zone" :class="{ active: trashDropActive }" data-drop-trash="true"><Trash2 :size="19" /><span><b>{{ appSettings.recycleBinEnabled ? t("移入回收站") : t("永久删除") }}</b><small>{{ t("拖到这里后松开") }}</small></span></div>
       <section class="storage"><div><HardDrive :size="17" /><span>{{ t("本地存储") }}</span><b>{{ formatBytes(repositoryInfo.totalBytes) }}</b><button :aria-label="t('打开本地资料库文件夹')" :title="t('打开本地资料库文件夹')" @click="openRepositoryFolder"><FolderOpen :size="14" /></button></div><small :title="repositoryInfo.path">{{ repositoryInfo.path || t("Chronicle 本地资料库") }}</small></section>
       <div class="account"><span class="avatar">T</span><span><b>ThermalEX</b><small>{{ t("本机设备") }}</small></span></div>
     </aside>
@@ -1319,7 +1395,7 @@ onBeforeUnmount(() => {
         <div class="panel-title"><div><h1 id="archives-title">{{ selectedCategoryName }}</h1><p class="category-path">{{ selectedCategoryPath }}</p></div><div class="sort-control"><button class="icon-button" :aria-label="t('排列方式')" :title="t('排列方式')" :aria-expanded="sortMenuOpen" @click="sortMenuOpen = !sortMenuOpen"><SlidersHorizontal :size="18" /></button><div v-if="sortMenuOpen" class="sort-menu"><button :class="{ active: sortMode === 'newest' }" @click="sortMode = 'newest'; sortMenuOpen = false">{{ t("时间 新–旧") }}</button><button :class="{ active: sortMode === 'oldest' }" @click="sortMode = 'oldest'; sortMenuOpen = false">{{ t("时间 旧–新") }}</button><button :class="{ active: sortMode === 'nameAsc' }" @click="sortMode = 'nameAsc'; sortMenuOpen = false">{{ t("名称 A–Z") }}</button><button :class="{ active: sortMode === 'nameDesc' }" @click="sortMode = 'nameDesc'; sortMenuOpen = false">{{ t("名称 Z–A") }}</button></div></div></div>
         <label class="search"><Search :size="17" /><input ref="searchInput" v-model="searchTerm" type="search" :placeholder="t('搜索名称、来源或标签')" /><kbd>Ctrl K</kbd></label>
         <div class="archive-list" :aria-busy="loading">
-          <article v-for="item in filteredArchives" :key="item.id" class="archive-row" :class="{ selected: selectedArchiveId === item.id, 'needs-location': archiveNeedsLocation(item) }" draggable="true" tabindex="0" @dragstart="startArchiveDrag(item.id, $event)" @dragend="finishDrag" @click="selectArchive(item.id)" @keydown.enter="selectArchive(item.id)">
+          <article v-for="item in filteredArchives" :key="item.id" class="archive-row" :class="{ selected: selectedArchiveId === item.id, 'needs-location': archiveNeedsLocation(item) }" tabindex="0" @pointerdown="beginPointerDrag({ kind: 'archive', id: item.id, label: item.name }, $event)" @click="handleArchiveRowClick(item.id)" @keydown.enter="selectArchive(item.id)">
             <span class="file-icon"><Folder v-if="item.kind === 'folder'" :size="19" /><File v-else-if="item.kind === 'file'" :size="19" /><FolderArchive v-else :size="19" /></span>
             <span class="archive-copy"><span class="row-title"><button class="archive-name" :aria-label="t('编辑存档 {name}', { name: item.name })" :title="t('编辑存档 {name}', { name: item.name })" @click.stop="openArchiveEditor(item)">{{ item.name }}</button><span class="automation-badges"><button class="automation-badge" :class="{ active: item.autoBackupEnabled }" :aria-label="t('编辑 {name} 的自动备份设置', { name: item.name })" :title="t('编辑 {name} 的自动备份设置', { name: item.name })" @click.stop="openArchiveEditor(item)">{{ t("自动备份") }}</button><button class="automation-badge" :class="{ active: item.automaticUploadEnabled }" :aria-label="t('编辑 {name} 的自动上传设置', { name: item.name })" :title="t('编辑 {name} 的自动上传设置', { name: item.name })" @click.stop="openArchiveEditor(item)">{{ t("自动上传") }}</button></span><button v-if="archiveNeedsLocation(item)" class="location-warning" :aria-label="t('重新定位 {name} 的本机来源', { name: item.name })" :title="t('重新定位本机来源')" @click.stop="openArchiveEditor(item, true)"><AlertTriangle :size="13" /></button><i v-else :class="item.lastSnapshotAt ? 'synced' : 'local'"><Check v-if="item.lastSnapshotAt" :size="13" /><HardDrive v-else :size="13" /></i></span><small>{{ archiveNeedsLocation(item) ? t("等待定位本机来源") : displaySourcePath(item.sourcePath) }}</small><span class="meta"><span>{{ item.category }}</span><span>{{ formatBytes(item.totalBytes) }}</span><span>{{ formatTime(item.lastSnapshotAt) }}</span></span></span>
           </article>
@@ -1372,6 +1448,7 @@ onBeforeUnmount(() => {
     <button class="floating-theme-toggle" :class="{ 'is-dark': appSettings.colorMode === 'dark' }" :aria-label="appSettings.colorMode === 'dark' ? t('切换到日间模式') : t('切换到夜间模式')" :title="appSettings.colorMode === 'dark' ? t('切换到日间模式') : t('切换到夜间模式')" :aria-pressed="appSettings.colorMode === 'dark'" @click="toggleColorMode"><Sun v-if="appSettings.colorMode === 'dark'" :size="17" /><Moon v-else :size="17" /></button>
     <UpdateDialog v-if="availableUpdate && !tutorialActive" :update="availableUpdate" @close="availableUpdate = undefined" />
     <div v-if="dragDropActive" class="drop-overlay" aria-hidden="true"><UploadCloud :size="34" /><b>{{ t('松开以添加存档') }}</b><small>{{ t('支持文件和文件夹') }}</small></div>
+    <div v-if="dragGhost" class="drag-ghost" aria-hidden="true" :style="{ left: `${dragGhost.x}px`, top: `${dragGhost.y}px` }">{{ dragging?.label }}</div>
     <CloudCenterDialog v-if="cloudSettingsOpen" @close="cloudSettingsOpen = false" @saved="handleCloudSettingsChanged" @downloaded="handleCloudDownload" @settings-downloaded="handleCloudSettingsDownload" />
     <CloudHealthDialog v-if="cloudHealthDialogOpen" :items="cloudHealthCheckItems" :running="cloudHealthCheckRunning" @close="cloudHealthDialogOpen = false" />
     <CreateCategoryDialog :tutorial-progress="tutorialProgress" @tutorial-tip="rememberTutorialTip"
