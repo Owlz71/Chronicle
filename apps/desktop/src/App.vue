@@ -588,7 +588,9 @@ async function createArchive(input: CreateArchiveInput, options: { saveAsDefault
       showNotice(t("存档设置已更新"));
       return;
     }
-    const categoryId = selectedCategoryId.value === "all" ? undefined : selectedCategoryId.value;
+    const categoryId = input.categoryId === undefined
+      ? (selectedCategoryId.value === "all" ? undefined : selectedCategoryId.value)
+      : (input.categoryId || undefined);
     const archive = await archiveRepository.createArchive({ ...input, autoBackupEnabled: false, categoryId });
     try { if (input.backupTrigger && input.autoBackupEnabled) await setBackupTrigger(archive.id, input.backupTrigger); }
     catch (error) {
@@ -600,6 +602,10 @@ async function createArchive(input: CreateArchiveInput, options: { saveAsDefault
     await archiveRepository.refreshAutoBackup();
     createDialogOpen.value = false;
     if (categoryId) expandedCategoryIds.value = new Set([...expandedCategoryIds.value, categoryId]);
+    // Reveal the archive in the category it landed in, so picking a different one in
+    // the dialog never hides the result behind the current sidebar filter.
+    const targetCategoryId = categoryId ?? "all";
+    if (targetCategoryId !== selectedCategoryId.value) selectCategory(targetCategoryId);
     await refreshArchives(archive.id);
     await refreshSnapshots(archive.id);
     await refreshRepositoryInfo();
@@ -1524,6 +1530,8 @@ onBeforeUnmount(() => {
       :default-automatic-upload="appSettings.defaultAutomaticUpload"
       :default-name="droppedDefaultName"
       :preset-backup-trigger="presetBackupTrigger"
+      :categories="categoryRecords"
+      :default-category-id="selectedCategoryId === 'all' ? '' : selectedCategoryId"
       :picking="pickingSource"
       :submitting="creatingArchive"
       :error="createArchiveError"

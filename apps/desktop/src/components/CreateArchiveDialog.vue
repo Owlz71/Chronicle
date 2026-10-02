@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { t } from "../services/i18n";
-import { Database, File, Folder, HardDrive, Plus, Trash2, UploadCloud, X } from "@lucide/vue";
+import { Database, File, Folder, FolderArchive, HardDrive, Plus, Trash2, UploadCloud, X } from "@lucide/vue";
 import { onMounted, ref, watch } from "vue";
-import type { ArchiveSource, CreateArchiveInput, SourceKind, StoragePolicy } from "../domain";
+import type { ArchiveSource, CategoryRecord, CreateArchiveInput, SourceKind, StoragePolicy } from "../domain";
 import { createBackdropDismissal } from "../services/dialogDismissal";
 import { normalizeRegistryPath } from "../services/backupRules";
 import TutorialHint from "./TutorialHint.vue";
@@ -18,6 +18,8 @@ const props = defineProps<{
   defaultAutomaticUpload?: boolean;
   defaultName?: string;
   presetBackupTrigger?: BackupTriggerConfig;
+  categories?: CategoryRecord[];
+  defaultCategoryId?: string;
   picking?: SourceKind;
   submitting?: boolean;
   error?: string;
@@ -40,6 +42,7 @@ const emit = defineEmits<{
 }>();
 
 const name = ref(props.editName ?? props.defaultName ?? "");
+const categoryId = ref(props.defaultCategoryId ?? "");
 const saveAsDefaults = ref(false);
 const excludePatterns = ref((props.editExcludePatterns ?? []).join("\n"));
 const registryPath = ref("");
@@ -79,6 +82,7 @@ function submit(): void {
   emit("submit", {
     name: name.value.trim(),
     sources: props.sources.map((source) => ({ ...source })),
+    categoryId: categoryId.value || undefined,
     excludePatterns: excludePatterns.value.split(/\r?\n/).map((pattern) => pattern.trim()).filter(Boolean),
     storagePolicy: storagePolicy.value,
     createInitialSnapshot: createInitialSnapshot.value,
@@ -108,6 +112,20 @@ onMounted(async () => {
       </header>
 
       <main>
+        <div v-if="!editName" class="field category-field">
+          <span>{{ t('分类') }}</span>
+          <div class="category-picker" role="group" :aria-label="t('分类')">
+            <label :class="{ selected: !categoryId }">
+              <input v-model="categoryId" type="radio" name="archive-category" value="" />
+              <FolderArchive :size="17" aria-hidden="true" /><span>{{ t('全部存档') }}</span>
+            </label>
+            <label v-for="category in categories ?? []" :key="category.id" :class="{ selected: categoryId === category.id }">
+              <input v-model="categoryId" type="radio" name="archive-category" :value="category.id" />
+              <Folder :size="17" aria-hidden="true" /><span>{{ category.name }}</span>
+            </label>
+          </div>
+        </div>
+
         <label class="field" data-tour="name">
           <span>{{ t('存档名称') }}</span>
           <input ref="nameInput" v-model="name" type="text" maxlength="100" :placeholder="t('用于同步、查询和显示')" :aria-invalid="attempted && !name.trim()" />
@@ -173,7 +191,19 @@ main { overflow-y: auto; padding: 23px 26px 28px; }
 .field { display: flex; flex-direction: column; gap: 7px; } .field > span, legend { color: var(--text-2); font-size: 10px; font-weight: 700; }
 input[type="text"] { width: 100%; height: 38px; padding: 0 11px; color: var(--text); background: var(--field); border: 1px solid var(--border-2); border-radius: 7px; font-size: 11px; } input[aria-invalid="true"] { border-color: var(--danger); }
 fieldset { margin: 20px 0; padding: 15px; border: 1px solid var(--border); border-radius: 9px; } legend { padding: 0 6px; } fieldset > p { margin: 0 0 12px; color: var(--text-3); font-size: 10px; }.source-location-required { background: var(--warning-soft); border-color: var(--warning-border); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning-border) 25%, transparent); }.source-location-required > p { color: var(--warning); font-weight: 650; }.source-location-required .source-actions button { color: var(--warning); background: var(--warning-chip); border-color: var(--warning-border); }
-.source-actions { display: flex; gap: 8px; } .source-actions button { display: inline-flex; align-items: center; gap: 7px; min-height: 35px; padding: 0 11px; color: var(--primary-dark); background: var(--primary-soft); border: 1px solid #c5ded8; border-radius: 7px; font-size: 10px; font-weight: 650; }
+.source-actions { display: flex; gap: 8px; } .source-actions button { display: inline-flex; align-items: center; gap: 7px; min-height: 35px; padding: 0 11px; color: var(--primary-dark); background: var(--primary-soft); border: 1px solid color-mix(in srgb, var(--primary) 35%, var(--border)); border-radius: 7px; font-size: 10px; font-weight: 650; }
+.category-field { margin-bottom: 20px; }
+.category-picker { display: flex; gap: 8px; padding: 3px 3px 9px; overflow-x: auto; scrollbar-width: thin; scrollbar-color: var(--border-2) transparent; }
+.category-picker > label { position: relative; display: inline-flex; flex: 0 0 auto; align-items: center; gap: 8px; min-height: 46px; padding: 0 16px; color: var(--text-3); background: var(--subtle); border: 1px solid var(--border); border-radius: 9px; font-size: 11px; font-weight: 650; white-space: nowrap; cursor: pointer; }
+.category-picker > label:hover { color: var(--text-2); background: var(--hover); border-color: var(--border-2); }
+.category-picker > label.selected { color: var(--primary-dark); background: var(--primary-soft); border-color: color-mix(in srgb, var(--primary) 45%, var(--border)); }
+.category-picker > label:has(input:focus-visible) { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.category-picker > label > span { overflow: hidden; max-width: 180px; text-overflow: ellipsis; }
+.category-picker input { position: absolute; width: 0; height: 0; margin: 0; opacity: 0; }
+.category-picker::-webkit-scrollbar { height: 8px; }
+.category-picker::-webkit-scrollbar-track { background: transparent; }
+.category-picker::-webkit-scrollbar-thumb { background: var(--border-2); border-radius: 999px; }
+.category-picker::-webkit-scrollbar-thumb:hover { background: var(--icon-muted); }
 .source-list { margin-top: 12px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; } .source-list > div { display: grid; grid-template-columns: 32px minmax(0, 1fr) 34px; align-items: center; min-height: 54px; padding: 6px 8px; } .source-list > div + div { border-top: 1px solid var(--border); } .source-icon { display: grid; place-items: center; width: 28px; height: 28px; color: var(--primary); background: var(--primary-soft); border-radius: 6px; } .source-list span:nth-child(2) { display: flex; min-width: 0; flex-direction: column; gap: 3px; } .source-list b { font-size: 10px; } .source-list small { overflow: hidden; color: var(--text-3); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; } .source-list button { display: grid; place-items: center; width: 32px; height: 32px; color: var(--text-3); background: transparent; border-radius: 6px; } .source-list button:hover { color: var(--danger); background: var(--danger-soft); }
 .storage-options { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; } .storage-options > label { display: grid; grid-template-columns: 0 22px 1fr; align-items: center; min-height: 60px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; } .storage-options > label.selected { color: var(--primary-dark); background: var(--primary-soft); border-color: color-mix(in srgb, var(--primary) 45%, var(--border)); } .storage-options input { opacity: 0; width: 0; } .storage-options span { display: flex; flex-direction: column; gap: 3px; } .storage-options b { font-size: 10px; } .storage-options small { color: var(--text-3); font-size: 8px; line-height: 1.35; }
 .initial-toggle { display: flex; align-items: center; justify-content: space-between; min-height: 60px; margin-top: 20px; padding: 10px 14px; background: var(--subtle); border-radius: 8px; } .initial-toggle > span { display: flex; flex-direction: column; gap: 4px; } .initial-toggle b { font-size: 10px; } .initial-toggle small { color: var(--text-3); font-size: 9px; }
